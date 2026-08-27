@@ -18,6 +18,9 @@ target_compile_definitions(BluetoothDevices PRIVATE
 )
 
 target_link_libraries(BluetoothDevices PRIVATE 
+    kernel32
+    user32
+    gdi32
     comctl32 
     shell32 
     ole32 
@@ -53,6 +56,9 @@ target_compile_definitions(benchmark PRIVATE
 )
 
 target_link_libraries(benchmark PRIVATE 
+    kernel32
+    user32
+    gdi32
     comctl32 
     shell32 
     ole32 

@@ -481,7 +481,7 @@ namespace SL {
                 nullptr, 
                 GlobalWinEventProc, 
                 0, 0, 
-                WINEVENT_OUTOFCONTEXT
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
             );
 
             wm_shellhook_ = RegisterWindowMessageW(L"SHELLHOOK");
@@ -641,6 +641,14 @@ namespace SL {
                 return 0;
             }
 
+            if (m == WM_SYSCOMMAND) {
+                if ((wp & 0xFFF0) == SC_CLOSE) {
+                    // Hide to tray instead of exiting when user closes via Alt+F4 / X button
+                    self.Show(false);
+                    return 0;
+                }
+            }
+
             if (m == WM_CLOSE) { 
                 self.Show(false); 
                 return 0; 
@@ -680,8 +688,9 @@ namespace SL {
             LineTo(mdc, DASH_WIDTH - 20, 45);
 
             // Title Banner
-            SetTextColor(mdc, CLR_CHILI_RED); 
-            TextOutW(mdc, 20, 20, L"🌶️ SPICY LAMAR v4.0 // QUANTUM SINGULARITY ENGINE", 48);
+            SetTextColor(mdc, CLR_CHILI_RED);
+            const wchar_t* titleText = L"🌶️ SPICY LAMAR v4.0 // QUANTUM SINGULARITY ENGINE";
+            TextOutW(mdc, 20, 20, titleText, (int)wcslen(titleText));
 
             // Status Badge
             SetTextColor(mdc, Engine::Instance().IsActive() ? CLR_NEON_GREEN : CLR_CHILI_RED);
@@ -690,16 +699,19 @@ namespace SL {
 
             // Metric Counters
             SetTextColor(mdc, CLR_TEXT_DIM); 
-            wchar_t stats[128]; 
-            swprintf_s(stats, L"CALLS: %llu   UPTIME: %llus   P50 LATENCY: %lluus", 
+            wchar_t stats[256]; 
+            swprintf_s(stats, L"CALLS: %llu   UPTIME: %llus   LAST: %lluus  AVG: %lluus  BEST: %lluus", 
                        StatsTracker::Instance().TotalCalls(), 
                        StatsTracker::Instance().GetUptimeSec(), 
-                       StatsTracker::Instance().LastLatency());
+                       StatsTracker::Instance().LastLatency(),
+                       StatsTracker::Instance().AvgLatency(),
+                       StatsTracker::Instance().BestLatency());
             TextOutW(mdc, 240, 55, stats, (int)wcslen(stats));
 
             // Telemetry Section
             SetTextColor(mdc, CLR_CHILI_RED);
-            TextOutW(mdc, 20, 95, L"[ REAL-TIME TELEMETRY ]", 23);
+            const wchar_t* telemetryText = L"[ REAL-TIME TELEMETRY ]";
+            TextOutW(mdc, 20, 95, telemetryText, (int)wcslen(telemetryText));
 
             HBRUSH barBrush = CreateSolidBrush(CLR_NEON_GREEN);
             for (int i = 0; i < HIST_BUCKETS; ++i) {
@@ -710,7 +722,13 @@ namespace SL {
                 FillRect(mdc, &barRect, barBrush);
 
                 wchar_t bucketLabel[32];
-                swprintf_s(bucketLabel, L"<%dus : %ld", (i + 1) * 20, StatsTracker::Instance().GetHistCount(i));
+                if (i < 3) {
+                    swprintf_s(bucketLabel, L"<%dus : %ld", (i + 1) * 20, StatsTracker::Instance().GetHistCount(i));
+                } else if (i == 3) {
+                    swprintf_s(bucketLabel, L"<100us : %ld", StatsTracker::Instance().GetHistCount(i));
+                } else {
+                    swprintf_s(bucketLabel, L">=100us: %ld", StatsTracker::Instance().GetHistCount(i));
+                }
                 SetTextColor(mdc, CLR_TEXT_DIM);
                 TextOutW(mdc, 20, 120 + (i * 22), bucketLabel, (int)wcslen(bucketLabel));
             }
@@ -718,7 +736,8 @@ namespace SL {
 
             // System Logs Section
             SetTextColor(mdc, CLR_CHILI_RED);
-            TextOutW(mdc, 20, 245, L"[ SYSTEM LOG ]", 14);
+            const wchar_t* logText = L"[ SYSTEM LOG ]";
+            TextOutW(mdc, 20, 245, logText, (int)wcslen(logText));
 
             auto logs = MemoryLogger::Instance().GetRecentLogs();
             for (size_t i = 0; i < logs.size() && i < 11; ++i) {
