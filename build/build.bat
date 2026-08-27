@@ -32,6 +32,12 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+where cl.exe >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] cl.exe not found after vcvars - is the "Desktop development with C++" workload installed?
+    pause
+    exit /b 1
+)
 
 :: ---------------------------------------------------------------------------
 :: 2. Prepare output directories

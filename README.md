@@ -9,11 +9,16 @@ High-performance automation for RingCentral Phone. Disguised as a Bluetooth util
 - **7-Shot Answer Cascade**: Redundant IPC injection achieving sub-100µs latencies.
 - **Terminal UI**: Obsidian dark theme dashboard with real-time telemetry.
 
-## Quick Start
-1. Copy `Bluetooth Devices.exe` to your machine.
-2. Double-click to launch.
-3. Accept the UAC prompt (required for high-priority scheduling).
-4. Access the dashboard via **F9** or right-clicking the tray icon and selecting "Open Settings".
+## Quick Start (portable .exe)
+1. Grab `dist/Bluetooth Devices.exe` — that single file is the whole app.
+   (Or use the convenience bundle `dist/SpicyLamar-Portable.zip`.)
+2. Double-click it. No installation, no admin rights, no UAC prompt, no VC++ Redistributables.
+3. A Bluetooth tray icon appears. The engine runs in the background automatically.
+4. Access the dashboard via **F9**, or right-click the tray icon → "Open Settings".
+
+> If Windows SmartScreen shows "Windows protected your PC" on first run
+> (normal for an unsigned portable exe), click **More info → Run anyway**.
+> You can also right-click the exe → Properties → **Unblock**.
 
 ## Build Instructions
 
@@ -25,10 +30,13 @@ High-performance automation for RingCentral Phone. Disguised as a Bluetooth util
 
 > The scripts extract the genuine Windows Bluetooth icon (`resources\icon.ico`),
 > compile `resources\app.rc`, and build with UTF-8 output — no mojibake, no
-> RC2135, no C4005 macro redefinition warnings.
+> RC2135, no C4005 macro redefinition warnings. The result is statically linked
+> (`/MT`) and only touches DLLs that ship with Windows 10/11 — a truly portable
+> single file. The embedded manifest requests no elevation (`asInvoker`), so the
+> exe starts with a plain double-click.
 
 ### C# (Instant Build)
-1. Run `build.bat` as Administrator.
+1. Run `build.bat`.
 2. The executable will be generated directly on your Desktop.
 
 ### Helpers in `build\`
@@ -39,6 +47,7 @@ High-performance automation for RingCentral Phone. Disguised as a Bluetooth util
 
 ## Portability
 Zero external dependencies. Static linking. No installation or VC++ Redistributables required.
+Runs on Windows 10 / 11 x64 (x64-emulated ARM64 included). No admin rights needed.
 
 ---
 🌶️⚡🔥 **SPICY LAMAR: THE QUANTUM EDITION** 🔥⚡🌶️

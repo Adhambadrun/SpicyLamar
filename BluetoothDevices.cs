@@ -17,12 +17,25 @@ namespace SpicyLamar
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
+            // Single-instance enforcement. A Global\ mutex needs SeCreateGlobalPrivilege,
+            // which non-elevated users lack - creating it then throws. Fall back to the
+            // session namespace so the portable build always starts, elevated or not.
             bool createdNew;
-            using (Mutex mutex = new Mutex(true, "Global\\SpicyLamarQuantumV4", out createdNew))
+            Mutex mutex = null;
+            try
+            {
+                mutex = new Mutex(true, @"Global\SpicyLamarQuantumV4", out createdNew);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                mutex = new Mutex(true, @"Local\SpicyLamarQuantumV4", out createdNew);
+            }
+
+            using (mutex)
             {
                 if (!createdNew)
                 {
-                    return; // Single-instance enforcement
+                    return; // Another instance is already running
                 }
                 Application.Run(new DashboardContext());
             }
@@ -53,9 +66,9 @@ namespace SpicyLamar
             dashboard = new TerminalForm(engine);
 
             // Global Hotkeys (with NoRepeat to match C++ version)
-            HotKeyManager.RegisterHotKey(dashboard.Handle, 1, HotKeyManager.KeyModifiers.NoRepeat, Keys.F9);  // Toggle Dashboard
-            HotKeyManager.RegisterHotKey(dashboard.Handle, 2, HotKeyManager.KeyModifiers.NoRepeat, Keys.F11); // Pause / Resume
-            HotKeyManager.RegisterHotKey(dashboard.Handle, 3, HotKeyManager.KeyModifiers.NoRepeat, Keys.F12); // Exit
+            HotKeyManager.RegisterHotKey(dashboard.Handle, 1, (uint)HotKeyManager.KeyModifiers.NoRepeat, (uint)Keys.F9);  // Toggle Dashboard
+            HotKeyManager.RegisterHotKey(dashboard.Handle, 2, (uint)HotKeyManager.KeyModifiers.NoRepeat, (uint)Keys.F11); // Pause / Resume
+            HotKeyManager.RegisterHotKey(dashboard.Handle, 3, (uint)HotKeyManager.KeyModifiers.NoRepeat, (uint)Keys.F12); // Exit
         }
 
         private Icon LoadBluetoothIcon()
