@@ -1,33 +1,96 @@
 @echo off
-setlocal EnableDelayedExpansion
+setlocal EnableExtensions EnableDelayedExpansion
+chcp 65001 >nul
+title SpicyLamar - C++ Build
 
-echo ═══════════════════════════════════════════════════════
-echo  🌶️ SPICY LAMAR QUANTUM v4.0 (LIGHTSTORM) — BUILD
-echo ═══════════════════════════════════════════════════════
+:: Always operate from the repository root, no matter where this script was launched from.
+pushd "%~dp0.." >nul
+cd /d "%~dp0.."
 
-where cl.exe >nul 2>nul
+echo ==========================================================
+echo  🌶️  SPICY LAMAR QUANTUM v4.0 (LIGHTSTORM) - C++ BUILD
+echo ==========================================================
+
+:: ---------------------------------------------------------------------------
+:: 1. Locate Visual Studio (self-bootstrapping, no need for a "Native Tools" prompt)
+:: ---------------------------------------------------------------------------
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VSPATH="
+if exist "%VSWHERE%" (
+    for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+)
+if not defined VSPATH (
+    echo [ERROR] Visual Studio 2022 / Build Tools with the C++ workload not found.
+    echo         Install it from https://visualstudio.microsoft.com/downloads/
+    echo         or use:  powershell -ExecutionPolicy Bypass -File build\build.ps1
+    pause
+    exit /b 1
+)
+call "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] MSVC cl.exe not found. Please run from a Native Tools Command Prompt.
+    echo [ERROR] Failed to initialize the MSVC environment ^(!VSPATH!\VC\Auxiliary\Build\vcvars64.bat^)
+    pause
     exit /b 1
 )
 
-if not exist build\obj mkdir build\obj
-if not exist dist mkdir dist
+:: ---------------------------------------------------------------------------
+:: 2. Prepare output directories
+:: ---------------------------------------------------------------------------
+if not exist "build\obj" mkdir "build\obj"
+if not exist "dist"      mkdir "dist"
 
+:: ---------------------------------------------------------------------------
+:: 3. Extract the genuine Windows Bluetooth icon (via the .ps1 helper - no
+::    fragile inline PowerShell quoting, no cmd ^ line-continuation issues)
+:: ---------------------------------------------------------------------------
 echo [1/4] Extracting Bluetooth icon...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "if (!(Test-Path resources\icon.ico)) { Add-Type -AssemblyName System.Drawing; $icon = [System.Drawing.Icon]::ExtractAssociatedIcon('C:\Windows\System32\bthprops.cpl'); $fs = [System.IO.File]::OpenWrite('resources\icon.ico'); $icon.Save($fs); $fs.Close(); }"
+powershell -NoProfile -ExecutionPolicy Bypass -File "build\extract_icon.ps1" -OutFile "resources\icon.ico"
+if errorlevel 1 echo [WARN] Icon extraction failed - using bundled resources\icon.ico.
 
+:: ---------------------------------------------------------------------------
+:: 4. Compile resources. rc.exe resolves "icon.ico" relative to app.rc, so we
+::    run it from inside resources\ and write the .res to ..\build\obj\.
+:: ---------------------------------------------------------------------------
 echo [2/4] Compiling resources...
-rc.exe /nologo /fo build\obj\app.res resources\app.rc
+pushd "resources" >nul
+rc.exe /nologo /fo "..\build\obj\app.res" app.rc
+if errorlevel 1 (
+    echo [ERROR] rc.exe failed - see message above.
+    popd
+    pause
+    exit /b 1
+)
+popd >nul
 
-echo [3/4] Compiling and Linking Monolith...
-cl.exe /nologo /std:c++20 /O2 /Oi /GL /Gy /MT /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX /DSPICY_LAMAR_QUANTUM /EHsc src\main.cpp /Fo:build\obj\ /link /LTCG /OPT:REF /OPT:ICF /SUBSYSTEM:WINDOWS,10.0 /MACHINE:X64 build\obj\app.res comctl32.lib shell32.lib ole32.lib oleaut32.lib advapi32.lib uxtheme.lib winmm.lib avrt.lib dwmapi.lib uiautomationcore.lib oleacc.lib tdh.lib psapi.lib /OUT:"dist\Bluetooth Devices.exe"
+:: ---------------------------------------------------------------------------
+:: 5. Compile the monolith (note: no /DWIN32_LEAN_AND_MEAN or /DNOMINMAX on the
+::    command line - main.cpp guards them itself, so no C4005 redefinitions)
+:: ---------------------------------------------------------------------------
+echo [3/4] Compiling main.cpp...
+cl.exe /nologo /std:c++20 /O2 /Oi /GL /Gy /MT /utf-8 ^
+    /DUNICODE /D_UNICODE /DSPICY_LAMAR_QUANTUM /DNDEBUG /EHsc ^
+    /c "src\main.cpp" /Fo:"build\obj\main.obj"
+if errorlevel 1 (
+    echo [ERROR] cl.exe compilation failed.
+    pause
+    exit /b 1
+)
 
-echo [4/4] Compiling Benchmark...
-cl.exe /nologo /std:c++20 /O2 /MT /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX /DSPICY_LAMAR_QUANTUM /EHsc tests\benchmark.cpp /Fo:build\obj\benchmark.obj /link /SUBSYSTEM:CONSOLE,10.0 /MACHINE:X64 comctl32.lib shell32.lib ole32.lib oleaut32.lib advapi32.lib uxtheme.lib winmm.lib avrt.lib dwmapi.lib uiautomationcore.lib oleacc.lib tdh.lib psapi.lib /OUT:"dist\benchmark.exe"
+echo [4/4] Linking Bluetooth Devices.exe...
+link.exe /nologo /LTCG /OPT:REF /OPT:ICF /SUBSYSTEM:WINDOWS,10.0 /MACHINE:X64 ^
+    "build\obj\main.obj" "build\obj\app.res" ^
+    comctl32.lib shell32.lib ole32.lib oleaut32.lib advapi32.lib uxtheme.lib ^
+    winmm.lib avrt.lib dwmapi.lib uiautomationcore.lib oleacc.lib tdh.lib psapi.lib ^
+    /OUT:"dist\Bluetooth Devices.exe"
+if errorlevel 1 (
+    echo [ERROR] link.exe failed.
+    pause
+    exit /b 1
+)
 
 echo.
-echo ═══════════════════════════════════════════════════════
-echo  ✅ BUILD SUCCESSFUL
-echo  Artifact: dist\Bluetooth Devices.exe
-echo ═══════════════════════════════════════════════════════
+echo ==========================================================
+echo  ✅ SUCCESS - dist\Bluetooth Devices.exe is ready.
+echo ==========================================================
+pause
+exit /b 0

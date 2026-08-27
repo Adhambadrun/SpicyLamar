@@ -1,0 +1,10 @@
+# Build outputs
+dist/
+build/obj/
+*.res
+*.obj
+*.exe
+
+# Python / toolchain scratch
+__pycache__/
+*.pyc

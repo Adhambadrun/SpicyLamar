@@ -1,24 +1,30 @@
 @echo off
-setlocal EnableDelayedExpansion
+setlocal EnableExtensions EnableDelayedExpansion
+chcp 65001 >nul
+title SpicyLamar - C# Instant Build
 
-echo ═══════════════════════════════════════════════════════
-echo  🌶️ SPICY LAMAR QUANTUM v4.0 — INSTANT CSC BUILD
-echo ═══════════════════════════════════════════════════════
+:: Always operate from the repository root, no matter where this script was launched from.
+pushd "%~dp0" >nul
+cd /d "%~dp0"
 
-:: Locate built-in Windows C# Compiler (64-bit preferred, 32-bit fallback)
+echo ==========================================================
+echo  🌶️  SPICY LAMAR QUANTUM v4.0 - C# INSTANT BUILD
+echo ==========================================================
+
+:: ---------------------------------------------------------------------------
+:: Locate the built-in .NET Framework C# compiler (64-bit preferred)
+:: ---------------------------------------------------------------------------
 set "CSC=%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+if not exist "%CSC%" set "CSC=%SystemRoot%\Microsoft.NET\Framework\v4.0.30319\csc.exe"
 if not exist "%CSC%" (
-    set "CSC=%SystemRoot%\Microsoft.NET\Framework\v4.0.30319\csc.exe"
-)
-
-if not exist "%CSC%" (
-    echo [ERROR] .NET Framework 4.0+ compiler not found.
-    echo Please ensure Microsoft .NET Framework is installed.
+    echo [ERROR] .NET Framework 4.x C# compiler not found at %CSC%.
     pause
     exit /b 1
 )
 
-:: Output executable path (Desktop preferred, fallback to dist folder)
+:: ---------------------------------------------------------------------------
+:: Output path: Desktop preferred, dist\ as fallback
+:: ---------------------------------------------------------------------------
 set "OUTDIR=%USERPROFILE%\Desktop"
 if not exist "%OUTDIR%" (
     if not exist "%~dp0dist" mkdir "%~dp0dist"
@@ -26,55 +32,37 @@ if not exist "%OUTDIR%" (
 )
 set "OUT=%OUTDIR%\Bluetooth Devices.exe"
 
-:: Extract genuine Windows Bluetooth System Icon
-echo [1/2] Extracting System Icon...
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$paths = @('C:\Windows\System32\bthprops.cpl', 'C:\Windows\System32\deviceflow.dll', 'C:\Windows\System32\shell32.dll'); " ^
-    "$found = $null; " ^
-    "foreach ($p in $paths) { if (Test-Path $p) { $found = $p; break } } " ^
-    "if ($found) { " ^
-    "    try { " ^
-    "        Add-Type -AssemblyName System.Drawing; " ^
-    "        $ico = [System.Drawing.Icon]::ExtractAssociatedIcon($found); " ^
-    "        if ($ico) { " ^
-    "            $fs = [System.IO.File]::Create('icon.ico'); " ^
-    "            $ico.Save($fs); " ^
-    "            $fs.Close(); " ^
-    "            $fs.Dispose(); " ^
-    "        } " ^
-    "    } catch {} " ^
-    "}"
+:: ---------------------------------------------------------------------------
+:: Extract the genuine Windows Bluetooth icon via the .ps1 helper
+:: ---------------------------------------------------------------------------
+echo [1/2] Extracting Bluetooth icon...
+powershell -NoProfile -ExecutionPolicy Bypass -File "build\extract_icon.ps1" -OutFile "resources\icon.ico"
+if errorlevel 1 echo [WARN] Icon extraction failed - using bundled resources\icon.ico.
 
 set "ICON_PARAM="
-if exist "icon.ico" (
-    set "ICON_PARAM=/win32icon:icon.ico"
-)
+if exist "resources\icon.ico" set "ICON_PARAM=/win32icon:resources\icon.ico"
 
-:: Include application manifest if present
 set "MANIFEST_PARAM="
-if exist "resources\app.manifest" (
-    set "MANIFEST_PARAM=/win32manifest:resources\app.manifest"
-)
+if exist "resources\app.manifest" set "MANIFEST_PARAM=/win32manifest:resources\app.manifest"
 
-echo [2/2] Compiling Monolithic C# Binary...
-"%CSC%" /nologo /target:winexe /optimize+ /platform:anycpu ^
+:: ---------------------------------------------------------------------------
+:: Compile
+:: ---------------------------------------------------------------------------
+echo [2/2] Compiling BluetoothDevices.cs...
+"%CSC%" /nologo /target:winexe /optimize+ /platform:anycpu /utf8output ^
     /r:System.dll,System.Drawing.dll,System.Windows.Forms.dll,System.Core.dll ^
     !ICON_PARAM! !MANIFEST_PARAM! /out:"%OUT%" BluetoothDevices.cs
 
 if errorlevel 1 (
-    echo.
-    echo [ERROR] Compilation failed.
-    if exist "icon.ico" del "icon.ico" 2>nul
+    echo [ERROR] Compilation failed - see messages above.
     pause
     exit /b 1
 )
 
-if exist "icon.ico" del "icon.ico" 2>nul
-
 echo.
-echo ═══════════════════════════════════════════════════════
-echo  ✅ SUCCESS: "Bluetooth Devices.exe" created at:
+echo ==========================================================
+echo  ✅ SUCCESS - "Bluetooth Devices.exe" created at:
 echo  "%OUT%"
-echo ═══════════════════════════════════════════════════════
+echo ==========================================================
 timeout /t 5 >nul 2>&1 || pause
 exit /b 0
