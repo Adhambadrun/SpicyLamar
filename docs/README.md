@@ -6,9 +6,9 @@ calls by detecting the active RingCentral app window and sending the app's
 answer shortcut (Alt+F1) through a redundant keyboard cascade.
 
 ## Quick Start
-Build, then grab `dist\SpicyLamar RingCentral Auto-Answer.exe`
-(or the portable zip), copy it anywhere, and double-click. No admin rights,
-no UAC, no installation.
+Grab `dist\SpicyLamar RingCentral Auto-Answer.exe`
+(or `dist\SpicyLamar-Portable.zip`), copy it anywhere, and double-click.
+No admin rights, no UAC, no installation.
 
 ## Build Instructions
 1. Open **Native Tools Command Prompt for VS 2022** (or double-click

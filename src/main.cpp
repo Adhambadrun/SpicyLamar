@@ -26,17 +26,17 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <dwmapi.h>
-#include <uiautomation.h>
 #include <objbase.h>
 #include <oleacc.h>
 #include <shellapi.h>
-#include <avrt.h>
 #include <evntrace.h>
 #include <evntcons.h>
 #include <tdh.h>
 #include <timeapi.h>
 #include <psapi.h>
+#ifdef _MSC_VER
 #include <wrl/client.h>
+#endif
 
 #include <atomic>
 #include <vector>
@@ -51,7 +51,9 @@
 #include <sstream>
 #include <cstdint>
 #include <cmath>
+#include <cwchar>
 
+#ifdef _MSC_VER
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
@@ -59,14 +61,22 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "winmm.lib")
-#pragma comment(lib, "avrt.lib")
 #pragma comment(lib, "dwmapi.lib")
-#pragma comment(lib, "uiautomationcore.lib")
 #pragma comment(lib, "oleacc.lib")
 #pragma comment(lib, "tdh.lib")
 #pragma comment(lib, "psapi.lib")
+#else
+#define SL_CROSS_COMPILE 1
+#endif
 
+#ifdef _MSC_VER
 using Microsoft::WRL::ComPtr;
+#define SL_SWPRINTF(dest, ...) swprintf_s(dest, __VA_ARGS__)
+#define SL_WCSCPY(dest, src) wcscpy_s(dest, src)
+#else
+#define SL_SWPRINTF(dest, ...) swprintf(dest, _countof(dest), __VA_ARGS__)
+#define SL_WCSCPY(dest, src) wcscpy(dest, src)
+#endif
 
 namespace SL {
     // Identity Configuration
@@ -135,7 +145,7 @@ namespace SL {
             SYSTEMTIME st; 
             GetLocalTime(&st);
             wchar_t ts[32]; 
-            swprintf_s(ts, L"%02d:%02d:%02d.%03d", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+            SL_SWPRINTF(ts, L"%02d:%02d:%02d.%03d", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
             buffer_[head_] = { ts, level, msg };
             head_ = (head_ + 1) % MAX_TELEMETRY_LOGS;
             if (count_ < MAX_TELEMETRY_LOGS) count_++;
@@ -167,9 +177,9 @@ namespace SL {
     };
 }
 
-#define LOG_INF(fmt, ...) { wchar_t b[256]; swprintf_s(b, fmt, ##__VA_ARGS__); SL::MemoryLogger::Instance().Log(L"INF", b); }
-#define LOG_WRN(fmt, ...) { wchar_t b[256]; swprintf_s(b, fmt, ##__VA_ARGS__); SL::MemoryLogger::Instance().Log(L"WRN", b); }
-#define LOG_ERR(fmt, ...) { wchar_t b[256]; swprintf_s(b, fmt, ##__VA_ARGS__); SL::MemoryLogger::Instance().Log(L"ERR", b); }
+#define LOG_INF(fmt, ...) { wchar_t b[256]; SL_SWPRINTF(b, fmt, ##__VA_ARGS__); SL::MemoryLogger::Instance().Log(L"INF", b); }
+#define LOG_WRN(fmt, ...) { wchar_t b[256]; SL_SWPRINTF(b, fmt, ##__VA_ARGS__); SL::MemoryLogger::Instance().Log(L"WRN", b); }
+#define LOG_ERR(fmt, ...) { wchar_t b[256]; SL_SWPRINTF(b, fmt, ##__VA_ARGS__); SL::MemoryLogger::Instance().Log(L"ERR", b); }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STATS & TELEMETRY TRACKER
@@ -530,7 +540,7 @@ namespace SL {
             nid_.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
             nid_.uCallbackMessage = WM_TRAYICON;
             nid_.hIcon = LoadAppIcon();
-            wcscpy_s(nid_.szTip, APP_NAME);
+            SL_WCSCPY(nid_.szTip, APP_NAME);
 
             Shell_NotifyIconW(NIM_ADD, &nid_);
         }
@@ -682,7 +692,7 @@ namespace SL {
             // Metric Counters
             SetTextColor(mdc, CLR_TEXT_DIM); 
             wchar_t stats[256]; 
-            swprintf_s(stats, L"CALLS: %llu   UPTIME: %llus   LAST: %lluus  AVG: %lluus  BEST: %lluus", 
+            SL_SWPRINTF(stats, L"CALLS: %llu   UPTIME: %llus   LAST: %lluus  AVG: %lluus  BEST: %lluus", 
                        StatsTracker::Instance().TotalCalls(), 
                        StatsTracker::Instance().GetUptimeSec(), 
                        StatsTracker::Instance().LastLatency(),
@@ -705,11 +715,11 @@ namespace SL {
 
                 wchar_t bucketLabel[32];
                 if (i < 3) {
-                    swprintf_s(bucketLabel, L"<%dus : %ld", (i + 1) * 20, StatsTracker::Instance().GetHistCount(i));
+                    SL_SWPRINTF(bucketLabel, L"<%dus : %ld", (i + 1) * 20, StatsTracker::Instance().GetHistCount(i));
                 } else if (i == 3) {
-                    swprintf_s(bucketLabel, L"<100us : %ld", StatsTracker::Instance().GetHistCount(i));
+                    SL_SWPRINTF(bucketLabel, L"<100us : %ld", StatsTracker::Instance().GetHistCount(i));
                 } else {
-                    swprintf_s(bucketLabel, L">=100us: %ld", StatsTracker::Instance().GetHistCount(i));
+                    SL_SWPRINTF(bucketLabel, L">=100us: %ld", StatsTracker::Instance().GetHistCount(i));
                 }
                 SetTextColor(mdc, CLR_TEXT_DIM);
                 TextOutW(mdc, 20, 120 + (i * 22), bucketLabel, (int)wcslen(bucketLabel));
@@ -725,7 +735,7 @@ namespace SL {
             for (size_t i = 0; i < logs.size() && i < 11; ++i) {
                 SetTextColor(mdc, CLR_NEON_GREEN);
                 wchar_t line[300]; 
-                swprintf_s(line, L"%ls [%ls] %ls", logs[i].timestamp.c_str(), logs[i].level.c_str(), logs[i].message.c_str());
+                SL_SWPRINTF(line, L"%ls [%ls] %ls", logs[i].timestamp.c_str(), logs[i].level.c_str(), logs[i].message.c_str());
                 TextOutW(mdc, 20, 270 + (int)i * 20, line, (int)wcslen(line));
             }
 
@@ -755,7 +765,7 @@ namespace SL {
 // APPLICATION ENTRY POINT
 // ─────────────────────────────────────────────────────────────────────────────
 #ifndef BENCHMARK
-int WINAPI wWinMain(HINSTANCE h, HINSTANCE, LPWSTR, int) {
+static int RunApp(HINSTANCE h) {
     // Single-instance enforcement
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, SL::APP_MUTEX_NAME);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -799,4 +809,15 @@ int WINAPI wWinMain(HINSTANCE h, HINSTANCE, LPWSTR, int) {
     }
     return (int)m.wParam;
 }
+
+#ifdef _MSC_VER
+int WINAPI wWinMain(HINSTANCE h, HINSTANCE, LPWSTR, int) {
+    return RunApp(h);
+}
+#else
+int WINAPI WinMain(HINSTANCE h, HINSTANCE, LPSTR, int) {
+    return RunApp(h);
+}
+#endif
+
 #endif

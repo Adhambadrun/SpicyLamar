@@ -10,8 +10,8 @@ Microsoft or Windows components. It shows its real name, its own icon, and an
 honest version/company resource block.
 
 ## Quick Start (portable .exe)
-1. Build on Windows (see below) or grab the CI artifact:
-   `SpicyLamar RingCentral Auto-Answer.exe` (single file, portable).
+1. Grab `dist\SpicyLamar RingCentral Auto-Answer.exe` (single file, portable)
+   or `dist\SpicyLamar-Portable.zip`.
 2. Double-click it. No installation, no admin rights, no UAC prompt,
    no VC++ Redistributables.
 3. A Spicy Lamar tray icon appears. The engine runs in the background.
@@ -36,10 +36,6 @@ the exe starts with a plain double-click.
 ### C# (Instant Build)
 1. Run `build.bat`.
 2. Find `dist\SpicyLamar RingCentral Auto-Answer.exe`.
-
-### GitHub Actions
-A merge/PR build automatically compiles the portable exe on a Windows runner
-and uploads it as a build artifact named `portable`.
 
 ### Helpers in `build\`
 - `build.ps1` — full PowerShell C++ build
