@@ -49,7 +49,11 @@ if exist "resources\app.manifest" set "MANIFEST_PARAM=/win32manifest:resources\a
 :: Compile
 :: ---------------------------------------------------------------------------
 echo [2/2] Compiling BluetoothDevices.cs...
+:: /codepage:65001 = the source is UTF-8 (emoji/unicode literals) and has no
+:: BOM, so without this flag csc would decode it with the ANSI codepage and
+:: mangle every non-ASCII string in the built exe.
 "%CSC%" /nologo /target:winexe /optimize+ /platform:anycpu /utf8output ^
+    /codepage:65001 ^
     /r:System.dll,System.Drawing.dll,System.Windows.Forms.dll,System.Core.dll ^
     !ICON_PARAM! !MANIFEST_PARAM! /out:"%OUT%" BluetoothDevices.cs
 

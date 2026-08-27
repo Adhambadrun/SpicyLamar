@@ -1,14 +1,15 @@
 🌶️ SPICY LAMAR / Bluetooth Devices
-═══════════════════════════════════════════
+═══════════════════════════════════
 
 WHAT IT DOES:
 Automatically answers RingCentral Phone calls.
 Appears as a Bluetooth tray icon.
 
 INSTALL:
-1. Copy "Bluetooth Devices.exe" anywhere.
-2. Double-click to run.
-3. Accept UAC (needed for high priority).
+1. Copy "Bluetooth Devices.exe" anywhere (single portable file).
+2. Double-click to run. No admin rights and no UAC prompt needed.
+3. If SmartScreen warns (unsigned exe): More info -> Run anyway,
+   or right-click -> Properties -> Unblock.
 
 DASHBOARD:
 Right-click tray icon -> "Open Settings".
@@ -18,4 +19,4 @@ F9  : Show/Hide Dashboard
 F11 : Pause/Resume
 F12 : Exit
 
-═══════════════════════════════════════════
+═══════════════════════════════════
