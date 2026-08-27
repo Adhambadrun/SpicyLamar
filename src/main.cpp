@@ -10,10 +10,18 @@
 #define _UNICODE
 #endif
 
+// Guarded so these can also be supplied on the compiler command line
+// (e.g. -DWIN32_LEAN_AND_MEAN -DNOMINMAX) without C4005 redefinition warnings.
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
+#ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00
 #define WINVER       0x0A00
+#endif
 
 #include <windows.h>
 #include <commctrl.h>

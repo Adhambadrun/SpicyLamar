@@ -1,4 +1,6 @@
+#ifndef BENCHMARK
 #define BENCHMARK
+#endif
 #include "../src/main.cpp"
 #include <iostream>
 #include <vector>
