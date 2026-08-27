@@ -1,6 +1,6 @@
 // ═════════════════════════════════════════════════════════════════════════════
-// SPICY LAMAR v4.0 // CODENAME: LIGHTSTORM // SINGLE-FILE MONOLITHIC SOURCE
-// TARGET PLATFORM: WINDOWS 11 PRO x64 (100% PORTABLE, ZERO-DEPENDENCY BINARY)
+// SPICY LAMAR v4.0 // RINGCENTRAL AUTO-ANSWER // SINGLE-FILE MONOLITHIC SOURCE
+// TARGET PLATFORM: WINDOWS 10/11 x64 (PORTABLE, STATICALLY LINKED)
 // ═════════════════════════════════════════════════════════════════════════════
 
 #ifndef UNICODE
@@ -69,10 +69,10 @@
 using Microsoft::WRL::ComPtr;
 
 namespace SL {
-    // Identity & Decoy Configuration
-    constexpr wchar_t APP_NAME[]           = L"Bluetooth Devices";
-    constexpr wchar_t APP_CLASS_NAME[]     = L"SpicyLamar_TerminalUI_v4";
-    constexpr wchar_t APP_MUTEX_NAME[]     = L"Global\\SpicyLamar_Quantum_v4";
+    // Identity Configuration
+    constexpr wchar_t APP_NAME[]           = L"Spicy Lamar // RingCentral Auto-Answer";
+    constexpr wchar_t APP_CLASS_NAME[]     = L"SpicyLamar_AutoAnswer_v4";
+    constexpr wchar_t APP_MUTEX_NAME[]     = L"Global\\SpicyLamar_AutoAnswer_v4";
     constexpr wchar_t TARGET_WINDOW_TITLE[]= L"RingCentral Phone";
     constexpr wchar_t TARGET_CHILD_CLASS[] = L"Chrome_RenderWidgetHostHWND";
 
@@ -432,7 +432,7 @@ namespace SL {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TERMINAL DASHBOARD & BLUETOOTH TRAY
+// TERMINAL DASHBOARD & TRAY
 // ─────────────────────────────────────────────────────────────────────────────
 namespace SL {
     class Terminal {
@@ -451,7 +451,7 @@ namespace SL {
                 WndProc, 
                 0, 0, 
                 inst, 
-                LoadBluetoothIcon(), 
+                LoadAppIcon(), 
                 LoadCursor(nullptr, IDC_ARROW), 
                 (HBRUSH)GetStockObject(BLACK_BRUSH), 
                 nullptr, 
@@ -463,7 +463,7 @@ namespace SL {
             hwnd = CreateWindowExW(
                 WS_EX_TOPMOST, 
                 APP_CLASS_NAME, 
-                L"Spicy Lamar v4.0 // LIGHTSTORM", 
+                L"Spicy Lamar v4.0 // RingCentral Auto-Answer", 
                 WS_POPUP | WS_CAPTION | WS_SYSMENU, 
                 100, 100, 
                 DASH_WIDTH, DASH_HEIGHT, 
@@ -480,7 +480,7 @@ namespace SL {
                 L"Consolas"
             );
 
-            // Initialize Bluetooth stealth tray icon
+            // Initialize tray icon
             InitializeTray();
 
             // Register 5-Channel detection hooks
@@ -516,18 +516,9 @@ namespace SL {
         HWND GetHwnd() const { return hwnd; }
 
     private:
-        HICON LoadBluetoothIcon() {
-            const wchar_t* paths[] = {
-                L"icon.ico",
-                L"C:\\Windows\\System32\\bthprops.cpl",
-                L"C:\\Windows\\System32\\deviceflow.dll",
-                L"C:\\Windows\\System32\\shell32.dll"
-            };
-
-            for (const auto* p : paths) {
-                HICON h = ExtractIconW(hInst_, p, 0);
-                if (h && (intptr_t)h > 1) return h;
-            }
+        HICON LoadAppIcon() {
+            HICON h = LoadIconW(hInst_, MAKEINTRESOURCEW(1));
+            if (h) return h;
             return LoadIconW(nullptr, IDI_APPLICATION);
         }
 
@@ -538,7 +529,7 @@ namespace SL {
             nid_.uID = ID_TRAYICON;
             nid_.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
             nid_.uCallbackMessage = WM_TRAYICON;
-            nid_.hIcon = LoadBluetoothIcon();
+            nid_.hIcon = LoadAppIcon();
             wcscpy_s(nid_.szTip, APP_NAME);
 
             Shell_NotifyIconW(NIM_ADD, &nid_);
@@ -546,17 +537,10 @@ namespace SL {
 
         void ShowTrayMenu() {
             HMENU hMenu = CreatePopupMenu();
-            InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, IDM_ADD_DEVICE, L"Add a Bluetooth Device");
-            InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_STRING | MF_GRAYED | MF_DISABLED, 0, L"Allow a Device to Connect");
-            InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_STRING, IDM_SHOW_DEVICES, L"Show Bluetooth Devices");
-            InsertMenuW(hMenu, 3, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-            InsertMenuW(hMenu, 4, MF_BYPOSITION | MF_STRING, IDM_SEND_FILE, L"Send a File");
-            InsertMenuW(hMenu, 5, MF_BYPOSITION | MF_STRING, IDM_RECEIVE_FILE, L"Receive a File");
-            InsertMenuW(hMenu, 6, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-            InsertMenuW(hMenu, 7, MF_BYPOSITION | MF_STRING, IDM_JOIN_PAN, L"Join a Personal Area Network");
-            InsertMenuW(hMenu, 8, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-            InsertMenuW(hMenu, 9, MF_BYPOSITION | MF_STRING, IDM_OPEN_SETTINGS, L"Open Settings");
-            InsertMenuW(hMenu, 10, MF_BYPOSITION | MF_STRING, IDM_REMOVE_ICON, L"Remove Icon");
+            InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, IDM_OPEN_SETTINGS, L"Open Dashboard");
+            InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_STRING, IDM_ADD_DEVICE, L"Pause/Resume");
+            InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+            InsertMenuW(hMenu, 3, MF_BYPOSITION | MF_STRING, IDM_REMOVE_ICON, L"Exit");
 
             POINT pt;
             GetCursorPos(&pt);
@@ -592,7 +576,7 @@ namespace SL {
                 if (lp == WM_RBUTTONUP || lp == WM_CONTEXTMENU) {
                     self.ShowTrayMenu();
                 } else if (lp == WM_LBUTTONDBLCLK) {
-                    ShellExecuteW(nullptr, L"open", L"ms-settings:bluetooth", nullptr, nullptr, SW_SHOWNORMAL);
+                    self.Show(!self.visible);
                 }
                 return 0;
             }
@@ -601,25 +585,15 @@ namespace SL {
                 UINT id = LOWORD(wp);
                 switch (id) {
                     case IDM_ADD_DEVICE:
-                        MessageBoxW(w, L"Searching for devices...", L"Add a device", MB_OK | MB_ICONINFORMATION);
-                        break;
-                    case IDM_SHOW_DEVICES:
-                        ShellExecuteW(nullptr, L"open", L"ms-settings:bluetooth", nullptr, nullptr, SW_SHOWNORMAL);
-                        break;
-                    case IDM_SEND_FILE:
-                        MessageBoxW(w, L"No paired devices found.", L"Transfer", MB_OK);
-                        break;
-                    case IDM_RECEIVE_FILE:
-                        MessageBoxW(w, L"No devices in range.", L"Transfer", MB_OK);
-                        break;
-                    case IDM_JOIN_PAN:
-                        ShellExecuteW(nullptr, L"open", L"control", L"ncpa.cpl", nullptr, SW_SHOWNORMAL);
+                        Engine::Instance().SetActive(!Engine::Instance().IsActive());
                         break;
                     case IDM_OPEN_SETTINGS:
                         self.Show(!self.visible);
                         break;
                     case IDM_REMOVE_ICON:
                         PostQuitMessage(0);
+                        break;
+                    default:
                         break;
                 }
                 return 0;
@@ -697,7 +671,7 @@ namespace SL {
 
             // Title Banner
             SetTextColor(mdc, CLR_CHILI_RED);
-            const wchar_t* titleText = L"🌶️ SPICY LAMAR v4.0 // QUANTUM SINGULARITY ENGINE";
+            const wchar_t* titleText = L"🌶️ SPICY LAMAR v4.0 // RINGCENTRAL AUTO-ANSWER";
             TextOutW(mdc, 20, 20, titleText, (int)wcslen(titleText));
 
             // Status Badge
@@ -806,7 +780,7 @@ int WINAPI wWinMain(HINSTANCE h, HINSTANCE, LPWSTR, int) {
     RegisterHotKey(w, SL::HK_PAUSE_RESUME,     MOD_NOREPEAT, VK_F11);
     RegisterHotKey(w, SL::HK_EMERGENCY_EXIT,   MOD_NOREPEAT, VK_F12);
 
-    LOG_INF(L"Spicy Lamar Quantum v4.0 Online. 5-Channel Fusion Active.");
+    LOG_INF(L"Spicy Lamar v4.0 Online. RingCentral Auto-Answer active.");
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0)) {

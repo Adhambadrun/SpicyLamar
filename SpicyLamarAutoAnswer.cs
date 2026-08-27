@@ -24,11 +24,11 @@ namespace SpicyLamar
             Mutex mutex = null;
             try
             {
-                mutex = new Mutex(true, @"Global\SpicyLamarQuantumV4", out createdNew);
+                mutex = new Mutex(true, @"Global\SpicyLamarAutoAnswerV4", out createdNew);
             }
             catch (UnauthorizedAccessException)
             {
-                mutex = new Mutex(true, @"Local\SpicyLamarQuantumV4", out createdNew);
+                mutex = new Mutex(true, @"Local\SpicyLamarAutoAnswerV4", out createdNew);
             }
 
             using (mutex)
@@ -53,14 +53,14 @@ namespace SpicyLamar
             engine = new AnswerEngine();
             trayIcon = new NotifyIcon()
             {
-                Icon = LoadBluetoothIcon(),
-                Text = "Bluetooth Devices",
+                Icon = LoadAppIcon(),
+                Text = "Spicy Lamar Auto-Answer",
                 Visible = true,
                 ContextMenu = BuildMenu()
             };
             trayIcon.DoubleClick += delegate(object s, EventArgs e)
             {
-                try { Process.Start("ms-settings:bluetooth"); } catch { }
+                dashboard.ToggleVisibility();
             };
 
             dashboard = new TerminalForm(engine);
@@ -71,66 +71,36 @@ namespace SpicyLamar
             HotKeyManager.RegisterHotKey(dashboard.Handle, 3, (uint)HotKeyManager.KeyModifiers.NoRepeat, (uint)Keys.F12); // Exit
         }
 
-        private Icon LoadBluetoothIcon()
+        private Icon LoadAppIcon()
         {
-            string[] paths = new string[]
+            try
             {
-                "icon.ico",
-                @"C:\Windows\System32\bthprops.cpl",
-                @"C:\Windows\System32\deviceflow.dll",
-                @"C:\Windows\System32\shell32.dll"
-            };
-
-            foreach (string p in paths)
-            {
-                try
-                {
-                    if (System.IO.File.Exists(p))
-                    {
-                        if (p.EndsWith(".ico", StringComparison.OrdinalIgnoreCase))
-                            return new Icon(p);
-                        Icon extracted = Icon.ExtractAssociatedIcon(p);
-                        if (extracted != null) return extracted;
-                    }
-                }
-                catch { }
+                Icon embedded = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+                if (embedded != null) return embedded;
             }
+            catch { }
+            try
+            {
+                if (System.IO.File.Exists("icon.ico"))
+                    return new Icon("icon.ico");
+            }
+            catch { }
             return SystemIcons.Application;
         }
 
         private ContextMenu BuildMenu()
         {
             ContextMenu menu = new ContextMenu();
-            menu.MenuItems.Add("Add a Bluetooth Device", delegate(object s, EventArgs e)
-            {
-                MessageBox.Show("Searching for devices...", "Add a device", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            });
-            MenuItem allowItem = menu.MenuItems.Add("Allow a Device to Connect");
-            allowItem.Enabled = false;
-            menu.MenuItems.Add("Show Bluetooth Devices", delegate(object s, EventArgs e)
-            {
-                try { Process.Start("ms-settings:bluetooth"); } catch { }
-            });
-            menu.MenuItems.Add("-");
-            menu.MenuItems.Add("Send a File", delegate(object s, EventArgs e)
-            {
-                MessageBox.Show("No paired devices found.", "Transfer", MessageBoxButtons.OK);
-            });
-            menu.MenuItems.Add("Receive a File", delegate(object s, EventArgs e)
-            {
-                MessageBox.Show("No devices in range.", "Transfer", MessageBoxButtons.OK);
-            });
-            menu.MenuItems.Add("-");
-            menu.MenuItems.Add("Join a Personal Area Network", delegate(object s, EventArgs e)
-            {
-                try { Process.Start("control", "ncpa.cpl"); } catch { }
-            });
-            menu.MenuItems.Add("-");
-            menu.MenuItems.Add("Open Settings", delegate(object s, EventArgs e)
+            menu.MenuItems.Add("Open Dashboard", delegate(object s, EventArgs e)
             {
                 dashboard.ToggleVisibility();
             });
-            menu.MenuItems.Add("Remove Icon", delegate(object s, EventArgs e)
+            menu.MenuItems.Add("Pause/Resume", delegate(object s, EventArgs e)
+            {
+                engine.Active = !engine.Active;
+            });
+            menu.MenuItems.Add("-");
+            menu.MenuItems.Add("Exit", delegate(object s, EventArgs e)
             {
                 ExitApp();
             });
@@ -182,7 +152,7 @@ namespace SpicyLamar
         public TerminalForm(AnswerEngine engine)
         {
             this.engine = engine;
-            this.Text = "Spicy Lamar v4.0 // LIGHTSTORM";
+            this.Text = "Spicy Lamar v4.0 // RingCentral Auto-Answer";
             this.Size = new Size(780, 520);
             this.BackColor = Color.FromArgb(5, 5, 5);
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -236,7 +206,7 @@ namespace SpicyLamar
         {
             Graphics g = e.Graphics;
 
-            g.DrawString("🌶️ SPICY LAMAR v4.0 // QUANTUM SINGULARITY ENGINE", headerFont, chiliBrush, 20, 20);
+            g.DrawString("🌶️ SPICY LAMAR v4.0 // RINGCENTRAL AUTO-ANSWER", headerFont, chiliBrush, 20, 20);
             g.DrawLine(linePen, 20, 45, 740, 45);
 
             string status = engine.Active ? "[🌶️ ACTIVE]" : "[⚠ PAUSED]";

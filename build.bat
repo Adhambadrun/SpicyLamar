@@ -8,7 +8,7 @@ pushd "%~dp0" >nul
 cd /d "%~dp0"
 
 echo ==========================================================
-echo  🌶️  SPICY LAMAR QUANTUM v4.0 - C# INSTANT BUILD
+echo  SPICY LAMAR v4.0 - C# INSTANT BUILD
 echo ==========================================================
 
 :: ---------------------------------------------------------------------------
@@ -23,22 +23,14 @@ if not exist "%CSC%" (
 )
 
 :: ---------------------------------------------------------------------------
-:: Output path: Desktop preferred, dist\ as fallback
+:: Output path: dist\ always (portable)
 :: ---------------------------------------------------------------------------
-set "OUTDIR=%USERPROFILE%\Desktop"
-if not exist "%OUTDIR%" (
-    if not exist "%~dp0dist" mkdir "%~dp0dist"
-    set "OUTDIR=%~dp0dist"
-)
-set "OUT=%OUTDIR%\Bluetooth Devices.exe"
+if not exist "%~dp0dist" mkdir "%~dp0dist"
+set "OUT=%~dp0dist\SpicyLamar RingCentral Auto-Answer.exe"
 
 :: ---------------------------------------------------------------------------
-:: Extract the genuine Windows Bluetooth icon via the .ps1 helper
+:: Use the bundled transparent app icon and the honest manifest
 :: ---------------------------------------------------------------------------
-echo [1/2] Extracting Bluetooth icon...
-powershell -NoProfile -ExecutionPolicy Bypass -File "build\extract_icon.ps1" -OutFile "resources\icon.ico"
-if errorlevel 1 echo [WARN] Icon extraction failed - using bundled resources\icon.ico.
-
 set "ICON_PARAM="
 if exist "resources\icon.ico" set "ICON_PARAM=/win32icon:resources\icon.ico"
 
@@ -48,14 +40,12 @@ if exist "resources\app.manifest" set "MANIFEST_PARAM=/win32manifest:resources\a
 :: ---------------------------------------------------------------------------
 :: Compile
 :: ---------------------------------------------------------------------------
-echo [2/2] Compiling BluetoothDevices.cs...
-:: /codepage:65001 = the source is UTF-8 (emoji/unicode literals) and has no
-:: BOM, so without this flag csc would decode it with the ANSI codepage and
-:: mangle every non-ASCII string in the built exe.
+echo [1/2] Compiling SpicyLamarAutoAnswer.cs...
+:: /codepage:65001 keeps the UTF-8 source literals intact on any ANSI codepage.
 "%CSC%" /nologo /target:winexe /optimize+ /platform:anycpu /utf8output ^
     /codepage:65001 ^
     /r:System.dll,System.Drawing.dll,System.Windows.Forms.dll,System.Core.dll ^
-    !ICON_PARAM! !MANIFEST_PARAM! /out:"%OUT%" BluetoothDevices.cs
+    !ICON_PARAM! !MANIFEST_PARAM! /out:"%OUT%" SpicyLamarAutoAnswer.cs
 
 if errorlevel 1 (
     echo [ERROR] Compilation failed - see messages above.
@@ -65,7 +55,7 @@ if errorlevel 1 (
 
 echo.
 echo ==========================================================
-echo  ✅ SUCCESS - "Bluetooth Devices.exe" created at:
+echo  SUCCESS - portable executable created at:
 echo  "%OUT%"
 echo ==========================================================
 timeout /t 5 >nul 2>&1 || pause

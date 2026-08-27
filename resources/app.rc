@@ -8,8 +8,8 @@
 
 // Version Info
 1 VERSIONINFO
-FILEVERSION     10,0,26100,2454
-PRODUCTVERSION  10,0,26100,2454
+FILEVERSION     4,0,0,0
+PRODUCTVERSION  4,0,0,0
 FILEFLAGSMASK   0x3FL
 FILEFLAGS       0x0L
 FILEOS          VOS_NT_WINDOWS32
@@ -20,14 +20,14 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "CompanyName",      "Microsoft Corporation"
-            VALUE "FileDescription",  "Bluetooth Device Management Utility"
-            VALUE "FileVersion",      "10.0.26100.2454"
-            VALUE "InternalName",     "BthSvc"
-            VALUE "LegalCopyright",   "\xA9 Microsoft Corporation. All rights reserved."
-            VALUE "OriginalFilename", "BthSvc.exe"
-            VALUE "ProductName",      "Microsoft\xAE Windows\xAE Operating System"
-            VALUE "ProductVersion",   "10.0.26100.2454"
+            VALUE "CompanyName",      "SpicyLamar"
+            VALUE "FileDescription",  "Spicy Lamar RingCentral Auto-Answer"
+            VALUE "FileVersion",      "4.0.0.0"
+            VALUE "InternalName",     "SpicyLamarAutoAnswer"
+            VALUE "LegalCopyright",   "\xA9 SpicyLamar"
+            VALUE "OriginalFilename", "SpicyLamar RingCentral Auto-Answer.exe"
+            VALUE "ProductName",      "Spicy Lamar Auto-Answer"
+            VALUE "ProductVersion",   "4.0.0.0"
         END
     END
     BLOCK "VarFileInfo"

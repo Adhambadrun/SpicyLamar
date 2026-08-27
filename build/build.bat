@@ -4,15 +4,16 @@ chcp 65001 >nul
 title SpicyLamar - C++ Build
 
 :: Always operate from the repository root, no matter where this script was launched from.
+:: This file lives in build\, so the repository root is one directory up.
 pushd "%~dp0.." >nul
 cd /d "%~dp0.."
 
 echo ==========================================================
-echo  🌶️  SPICY LAMAR QUANTUM v4.0 (LIGHTSTORM) - C++ BUILD
+echo  SPICY LAMAR v4.0 - C++ PORTABLE BUILD
 echo ==========================================================
 
 :: ---------------------------------------------------------------------------
-:: 1. Locate Visual Studio (self-bootstrapping, no need for a "Native Tools" prompt)
+:: 1. Locate Visual Studio (self-bootstrapping, no Native Tools prompt needed)
 :: ---------------------------------------------------------------------------
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VSPATH="
@@ -28,7 +29,7 @@ if not defined VSPATH (
 )
 call "!VSPATH!\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Failed to initialize the MSVC environment ^(!VSPATH!\VC\Auxiliary\Build\vcvars64.bat^)
+    echo [ERROR] Failed to initialize the MSVC environment (!VSPATH!\VC\Auxiliary\Build\vcvars64.bat)
     pause
     exit /b 1
 )
@@ -46,18 +47,9 @@ if not exist "build\obj" mkdir "build\obj"
 if not exist "dist"      mkdir "dist"
 
 :: ---------------------------------------------------------------------------
-:: 3. Extract the genuine Windows Bluetooth icon (via the .ps1 helper - no
-::    fragile inline PowerShell quoting, no cmd ^ line-continuation issues)
+:: 3. Compile resources. rc.exe resolves "icon.ico" relative to app.rc.
 :: ---------------------------------------------------------------------------
-echo [1/4] Extracting Bluetooth icon...
-powershell -NoProfile -ExecutionPolicy Bypass -File "build\extract_icon.ps1" -OutFile "resources\icon.ico"
-if errorlevel 1 echo [WARN] Icon extraction failed - using bundled resources\icon.ico.
-
-:: ---------------------------------------------------------------------------
-:: 4. Compile resources. rc.exe resolves "icon.ico" relative to app.rc, so we
-::    run it from inside resources\ and write the .res to ..\build\obj\.
-:: ---------------------------------------------------------------------------
-echo [2/4] Compiling resources...
+echo [1/3] Compiling resources...
 pushd "resources" >nul
 rc.exe /nologo /fo "..\build\obj\app.res" app.rc
 if errorlevel 1 (
@@ -69,10 +61,9 @@ if errorlevel 1 (
 popd >nul
 
 :: ---------------------------------------------------------------------------
-:: 5. Compile the monolith (note: no /DWIN32_LEAN_AND_MEAN or /DNOMINMAX on the
-::    command line - main.cpp guards them itself, so no C4005 redefinitions)
+:: 4. Compile the monolith
 :: ---------------------------------------------------------------------------
-echo [3/4] Compiling main.cpp...
+echo [2/3] Compiling main.cpp...
 cl.exe /nologo /std:c++20 /O2 /Oi /GL /Gy /MT /utf-8 ^
     /DUNICODE /D_UNICODE /DSPICY_LAMAR_QUANTUM /DNDEBUG /EHsc ^
     /c "src\main.cpp" /Fo:"build\obj\main.obj"
@@ -82,12 +73,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [4/4] Linking Bluetooth Devices.exe...
+:: ---------------------------------------------------------------------------
+:: 5. Link the portable single-file executable
+:: ---------------------------------------------------------------------------
+echo [3/3] Linking "SpicyLamar RingCentral Auto-Answer.exe"...
 link.exe /nologo /LTCG /OPT:REF /OPT:ICF /SUBSYSTEM:WINDOWS,10.0 /MACHINE:X64 ^
     "build\obj\main.obj" "build\obj\app.res" ^
     comctl32.lib shell32.lib ole32.lib oleaut32.lib advapi32.lib uxtheme.lib ^
     winmm.lib avrt.lib dwmapi.lib uiautomationcore.lib oleacc.lib tdh.lib psapi.lib ^
-    /OUT:"dist\Bluetooth Devices.exe"
+    /OUT:"dist\SpicyLamar RingCentral Auto-Answer.exe"
 if errorlevel 1 (
     echo [ERROR] link.exe failed.
     pause
@@ -96,7 +90,7 @@ if errorlevel 1 (
 
 echo.
 echo ==========================================================
-echo  ✅ SUCCESS - dist\Bluetooth Devices.exe is ready.
+echo  SUCCESS - dist\SpicyLamar RingCentral Auto-Answer.exe ready.
 echo ==========================================================
 pause
 exit /b 0
