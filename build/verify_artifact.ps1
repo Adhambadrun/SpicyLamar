@@ -1,11 +1,11 @@
 # =============================================================================
-#  SPICY LAMAR — verify_stealth.ps1
+#  SPICY LAMAR — verify_artifact.ps1
 #  Validates the built artifact: exists, is a PE32+ executable, has an
 #  embedded icon and version resource. Exit 0 = all good.
 # =============================================================================
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $repoRoot 'dist\Bluetooth Devices.exe'
+$exe = Join-Path $repoRoot 'dist\SpicyLamar RingCentral Auto-Answer.exe'
 
 Write-Host "== SpicyLamar artifact verification =="
 

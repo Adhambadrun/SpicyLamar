@@ -1,18 +1,20 @@
-🌶️ SPICY LAMAR / Bluetooth Devices
-═══════════════════════════════════
+🌶️ SPICY LAMAR / RingCentral Auto-Answer
+═══════════════════════════════════════
 
 WHAT IT DOES:
-Automatically answers RingCentral Phone calls.
-Appears as a Bluetooth tray icon.
+Automatically presses the RingCentral Phone answer shortcut (Alt+F1)
+when a RingCentral Phone window is active.
+Runs as a simple tray icon with an honest label.
 
 INSTALL:
-1. Copy "Bluetooth Devices.exe" anywhere (single portable file).
-2. Double-click to run. No admin rights and no UAC prompt needed.
-3. If SmartScreen warns (unsigned exe): More info -> Run anyway,
+1. Build it with build_portable.bat (C++) or build.bat (C#).
+2. Copy "SpicyLamar RingCentral Auto-Answer.exe" anywhere.
+3. Double-click to run. No admin rights and no UAC prompt needed.
+4. If SmartScreen warns (unsigned exe): More info -> Run anyway,
    or right-click -> Properties -> Unblock.
 
 DASHBOARD:
-Right-click tray icon -> "Open Settings".
+Right-click tray icon -> "Open Dashboard".
 
 HOTKEYS:
 F9  : Show/Hide Dashboard

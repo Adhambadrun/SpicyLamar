@@ -36,8 +36,9 @@ Check "PowerShell 5.1+ (build helpers)" ($PSVersionTable.PSVersion.Major -ge 5)
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Check "resources\app.rc" (Test-Path -LiteralPath (Join-Path $repoRoot 'resources\app.rc'))
 Check "resources\app.manifest" (Test-Path -LiteralPath (Join-Path $repoRoot 'resources\app.manifest'))
-Check "resources\icon.ico (bundled fallback)" (Test-Path -LiteralPath (Join-Path $repoRoot 'resources\icon.ico'))
+Check "resources\icon.ico (bundled app icon)" (Test-Path -LiteralPath (Join-Path $repoRoot 'resources\icon.ico'))
 Check "src\main.cpp" (Test-Path -LiteralPath (Join-Path $repoRoot 'src\main.cpp'))
+Check "SpicyLamarAutoAnswer.cs (C# build)" (Test-Path -LiteralPath (Join-Path $repoRoot 'SpicyLamarAutoAnswer.cs'))
 
 Write-Host ""
 if ($ok) {

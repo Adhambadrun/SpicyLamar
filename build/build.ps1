@@ -1,19 +1,14 @@
 # =============================================================================
 #  SPICY LAMAR — build.ps1
 #  Full C++ build in pure PowerShell. Locates Visual Studio via vswhere.exe,
-#  imports the vcvars64 environment, extracts the Bluetooth icon, compiles
-#  the .rc with rc.exe and builds the monolith with cl.exe.
+#  imports the vcvars64 environment, compiles the .rc with rc.exe and builds
+#  the monolith with cl.exe.
 #
 #  Usage:
 #      powershell -NoProfile -ExecutionPolicy Bypass -File build\build.ps1
-#      powershell -NoProfile -ExecutionPolicy Bypass -File build\build.ps1 -SkipIcon
 #
-#  Output:  dist\Bluetooth Devices.exe
+#  Output:  dist\SpicyLamar RingCentral Auto-Answer.exe
 # =============================================================================
-param(
-    [switch]$SkipIcon
-)
-
 $ErrorActionPreference = 'Stop'
 
 # Repo root = parent of build\ (this script lives in build\).
@@ -21,12 +16,12 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $objDir   = Join-Path $repoRoot 'build\obj'
 $distDir  = Join-Path $repoRoot 'dist'
 $res      = Join-Path $repoRoot 'build\obj\app.res'
-$outExe   = Join-Path $distDir 'Bluetooth Devices.exe'
+$outExe   = Join-Path $distDir 'SpicyLamar RingCentral Auto-Answer.exe'
 
 Push-Location $repoRoot
 try {
     Write-Host "=========================================================="
-    Write-Host " SPICY LAMAR QUANTUM v4.0 (LIGHTSTORM) - C++ BUILD (PS)"
+    Write-Host " SPICY LAMAR v4.0 - C++ PORTABLE BUILD (PS)"
     Write-Host "=========================================================="
 
     # --- 1. Locate Visual Studio -------------------------------------------
@@ -44,7 +39,7 @@ try {
     }
 
     # --- 2. Import the vcvars64 environment into this PowerShell process ----
-    Write-Host "[1/4] Initializing MSVC environment ($vcvars)..."
+    Write-Host "[1/3] Initializing MSVC environment ($vcvars)..."
     $envDump = & cmd /c "call `"$vcvars`" >nul 2>&1 && set"
     if ($LASTEXITCODE -ne 0 -or -not $envDump) {
         throw "Failed to import the MSVC environment (vcvars64.bat)."
@@ -57,20 +52,11 @@ try {
     $clPath = (Get-Command cl.exe -ErrorAction SilentlyContinue)
     if (-not $clPath) { throw "cl.exe not available after vcvars import." }
 
-    # --- 3. Extract the Bluetooth icon ---------------------------------------
-    if ($SkipIcon) {
-        Write-Host "[2/4] Skipping icon extraction (-SkipIcon)."
-    } else {
-        Write-Host "[2/4] Extracting Bluetooth icon..."
-        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'extract_icon.ps1') -OutFile (Join-Path $repoRoot 'resources\icon.ico')
-        if ($LASTEXITCODE -ne 0) { Write-Warning "Icon extraction failed; continuing with bundled icon." }
-    }
-
-    # --- 4. Compile resources -------------------------------------------------
+    # --- 3. Compile resources ------------------------------------------------
     New-Item -ItemType Directory -Path $objDir -Force | Out-Null
     New-Item -ItemType Directory -Path $distDir -Force | Out-Null
 
-    Write-Host "[3/4] Compiling resources (rc.exe)..."
+    Write-Host "[2/3] Compiling resources (rc.exe)..."
     Push-Location (Join-Path $repoRoot 'resources')
     try {
         & rc.exe /nologo /fo $res app.rc
@@ -79,8 +65,8 @@ try {
         Pop-Location
     }
 
-    # --- 5. Compile + link the monolith ---------------------------------------
-    Write-Host "[4/4] Compiling and linking the monolith (cl.exe)..."
+    # --- 4. Compile + link the monolith ---------------------------------------
+    Write-Host "[3/3] Compiling and linking the monolith (cl.exe)..."
     $cxxFlags = @(
         '/nologo','/std:c++20','/O2','/Oi','/GL','/Gy','/MT','/utf-8',
         '/DUNICODE','/D_UNICODE','/DSPICY_LAMAR_QUANTUM','/DNDEBUG','/EHsc',
