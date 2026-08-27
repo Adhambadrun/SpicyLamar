@@ -109,7 +109,7 @@ namespace SL {
     constexpr COLORREF CLR_TEXT_DIM       = RGB(180, 180, 180);
 
     // Performance & Telemetry Constants
-    constexpr DWORD   DEFAULT_DEBOUNCE_MS  = 1200;
+    constexpr DWORD   DEFAULT_DEBOUNCE_MS  = 500;
     constexpr DWORD   DEFAULT_POLL_MS      = 20;
     constexpr int     MAX_TELEMETRY_LOGS   = 15;
     constexpr int     HIST_BUCKETS         = 5;
@@ -256,6 +256,20 @@ namespace SL {
 // WINDOW CACHE & ENUMERATION
 // ─────────────────────────────────────────────────────────────────────────────
 namespace SL {
+    bool ContainsInsensitive(const wchar_t* text, const wchar_t* needle) {
+        if (!text || !needle || !*needle) return false;
+        const size_t n = wcslen(needle);
+        for (; *text; ++text) if (_wcsnicmp(text, needle, n) == 0) return true;
+        return false;
+    }
+
+    bool IsRingCentralTitle(const wchar_t* title) {
+        return ContainsInsensitive(title, L"RingCentral") ||
+               ContainsInsensitive(title, L"Ring Central") ||
+               ContainsInsensitive(title, L"RingMe") ||
+               ContainsInsensitive(title, L"Glip");
+    }
+
     class WindowCache {
     public:
         struct Snapshot { HWND main, child; };
@@ -282,11 +296,9 @@ namespace SL {
 
             EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
                 auto* d = reinterpret_cast<SearchData*>(lp);
-                if (!IsWindowVisible(hwnd)) return TRUE;
-
                 wchar_t title[256] = {0};
                 GetWindowTextW(hwnd, title, 256);
-                if (wcsstr(title, d->query) != nullptr) {
+                if (IsRingCentralTitle(title)) {
                     d->found = hwnd;
                     return FALSE; // Stop enumeration once found
                 }
@@ -294,11 +306,16 @@ namespace SL {
             }, reinterpret_cast<LPARAM>(&data));
 
             if (data.found) {
-                HWND c = FindWindowExW(data.found, nullptr, TARGET_CHILD_CLASS, nullptr);
-                if (!c) {
-                    HWND intermediate = FindWindowExW(data.found, nullptr, L"Intermediate D3D Window", nullptr);
-                    if (intermediate) c = FindWindowExW(intermediate, nullptr, TARGET_CHILD_CLASS, nullptr);
-                }
+                HWND c = nullptr;
+                EnumChildWindows(data.found, [](HWND h, LPARAM lp) -> BOOL {
+                    wchar_t cls[128] = {0};
+                    GetClassNameW(h, cls, 128);
+                    if (_wcsicmp(cls, TARGET_CHILD_CLASS) == 0) {
+                        *reinterpret_cast<HWND*>(lp) = h;
+                        return FALSE;
+                    }
+                    return TRUE;
+                }, reinterpret_cast<LPARAM>(&c));
                 Update(data.found, c);
             }
             return data.found;
@@ -360,6 +377,12 @@ namespace SL {
                 child = FindWindowExW(m, nullptr, TARGET_CHILD_CLASS, nullptr);
             }
 
+            // Keyboard APIs target the foreground desktop, so activate RingCentral first.
+            if (IsIconic(m)) ShowWindow(m, SW_RESTORE);
+            BringWindowToTop(m);
+            SetForegroundWindow(m);
+            if (child && IsWindow(child)) SetFocus(child);
+
             // ─────────────────────────────────────────────────────────────────
             // 7-SHOT REDUNDANT IPC CASCADE
             // ─────────────────────────────────────────────────────────────────
@@ -382,7 +405,13 @@ namespace SL {
             PostMessageW(m, WM_KEYDOWN, VK_RETURN, 0x001C0001);
             PostMessageW(m, WM_KEYUP,   VK_RETURN, 0xC01C0001);
 
-            // Shot 4: Simulated hardware key cascade (keybd_event)
+            // Shot 4: real keyboard input, with the legacy API as a fallback.
+            INPUT input[4] = {};
+            input[0].type = INPUT_KEYBOARD; input[0].ki.wVk = VK_MENU;
+            input[1].type = INPUT_KEYBOARD; input[1].ki.wVk = VK_F1;
+            input[2].type = INPUT_KEYBOARD; input[2].ki.wVk = VK_F1; input[2].ki.dwFlags = KEYEVENTF_KEYUP;
+            input[3].type = INPUT_KEYBOARD; input[3].ki.wVk = VK_MENU; input[3].ki.dwFlags = KEYEVENTF_KEYUP;
+            SendInput(4, input, sizeof(INPUT));
             keybd_event(VK_MENU, 0x38, 0, 0);
             keybd_event(VK_F1,   0x3B, 0, 0);
             keybd_event(VK_F1,   0x3B, KEYEVENTF_KEYUP, 0);
@@ -435,7 +464,7 @@ namespace SL {
 
         wchar_t title[256] = {0};
         GetWindowTextW(root, title, 256);
-        if (wcsstr(title, TARGET_WINDOW_TITLE) != nullptr) {
+        if (IsRingCentralTitle(title)) {
             Engine::Instance().TryAnswer(root, 1);
         }
     }
@@ -575,7 +604,7 @@ namespace SL {
                     if (self.visible) InvalidateRect(w, nullptr, FALSE);
                 } else if (wp == 2) {
                     HWND found = WindowCache::Instance().FindRingCentral();
-                    if (found && IsWindowVisible(found)) {
+                    if (found) {
                         Engine::Instance().TryAnswer(found, 2);
                     }
                 }
@@ -621,7 +650,7 @@ namespace SL {
                     HWND candidate = (HWND)lp;
                     wchar_t title[256] = {0};
                     GetWindowTextW(candidate, title, 256);
-                    if (wcsstr(title, TARGET_WINDOW_TITLE) != nullptr) {
+                    if (IsRingCentralTitle(title)) {
                         Engine::Instance().TryAnswer(candidate, 3);
                     }
                 }
