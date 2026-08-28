@@ -21,7 +21,7 @@ $outExe   = Join-Path $distDir 'SpicyLamar.exe'
 Push-Location $repoRoot
 try {
     Write-Host "=========================================================="
-    Write-Host " SPICY LAMAR v4.1 - C++ PORTABLE BUILD (PS)"
+    Write-Host " SPICY LAMAR v4.2 - C++ PORTABLE BUILD (PS)"
     Write-Host "=========================================================="
 
     # --- 1. Locate Visual Studio -------------------------------------------

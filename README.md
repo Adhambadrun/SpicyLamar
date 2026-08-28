@@ -1,19 +1,26 @@
 # 🌶️ SPICY LAMAR
 
 ## Overview
-A transparent, portable Windows tray utility that detects RingCentral Phone
-call activity and automatically presses the app's answer shortcut (**Alt+F1**)
+A transparent, portable Windows tray utility that watches for the RingCentral
+Phone window and automatically presses the app's answer shortcut (**Alt+F1**)
 through a redundant keyboard-event cascade.
 
 The app shows its real name — **Spicy Lamar** — its own icon, and an honest
 version/company resource block everywhere: window title, tray tooltip,
 dashboard, exe file name, and file properties.
 
-**The answer button is never clicked infinitely.** The Alt+F1 cascade fires
-only on real call activity (taskbar flash, call window shown, window
-activation) and is hard-limited to **3 attempts per ringing episode**, spaced
-at least 1.5 s apart. After 10 s of quiet the counter re-arms for the next
-call. An idle RingCentral window is never re-answered.
+**ALWAYS-ON ATTENTION (default).** While a RingCentral Phone window exists,
+Spicy Lamar relentlessly attends to it: it finds the window, focuses it
+(restores it if minimized, brings it to the front) and fires the Alt+F1 answer
+cascade — throttled to one cascade every 0.5 s. It never goes quiet on its own;
+press **F11** to pause/start the engine. This is the classic v4.0 behavior.
+
+**Bounded mode (optional build).** Prefer the answer button to never be clicked
+as infinite? Build with `-DSPICY_LAMAR_BOUNDED` (C++) / set
+`BOUNDED_MODE = true` (C#): the cascade then fires only on real call activity
+(taskbar flash, call window shown, window activation, title change) and is
+hard-limited to 3 attempts per ringing episode, spaced ≥ 1.5 s apart,
+re-armed after 10 s of quiet.
 
 ## Quick Start (portable .exe)
 1. Grab `dist\SpicyLamar.exe` (single file, portable)

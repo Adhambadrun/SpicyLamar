@@ -2,15 +2,20 @@
 ═══════════════════════════════════════
 
 WHAT IT DOES:
-Automatically presses the RingCentral Phone answer shortcut (Alt+F1)
-when call activity is detected in the RingCentral Phone window.
+Relentlessly watches for the RingCentral Phone window. While it exists,
+Spicy Lamar attends to it — focuses the window (restores it if minimized)
+and presses the answer shortcut (Alt+F1) roughly every 0.5 s.
 Runs as a simple tray icon under its real name: Spicy Lamar.
 
-The answer shortcut is NEVER pressed infinitely:
+ALWAYS-ON ATTENTION (default):
+  * hunts for the RingCentral Phone window 50x per second
+  * focuses + answers it while it exists — never goes quiet
+  * F11 pauses/starts the engine at any time
+
+Bounded mode (optional build: -DSPICY_LAMAR_BOUNDED / BOUNDED_MODE=true):
   * fires only on call events (flash / call window / activation)
-  * max 3 attempts per ringing episode
-  * at least 1.5 seconds between attempts
-  * re-arms after 10 seconds of quiet
+  * max 3 attempts per ringing episode, 1.5 s apart,
+    re-arms after 10 seconds of quiet
 
 INSTALL:
 1. Build it with build_portable.bat (C++) or build.bat (C#).

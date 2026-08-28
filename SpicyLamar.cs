@@ -158,7 +158,7 @@ namespace SpicyLamar
         public TerminalForm(AnswerEngine engine)
         {
             this.engine = engine;
-            this.Text = "Spicy Lamar v4.1";
+            this.Text = "Spicy Lamar v4.2";
             this.Size = new Size(780, 520);
             this.BackColor = Color.FromArgb(5, 5, 5);
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -212,7 +212,7 @@ namespace SpicyLamar
         {
             Graphics g = e.Graphics;
 
-            g.DrawString("🌶️ SPICY LAMAR v4.1", headerFont, chiliBrush, 20, 20);
+            g.DrawString("🌶️ SPICY LAMAR v4.2", headerFont, chiliBrush, 20, 20);
             g.DrawLine(linePen, 20, 45, 740, 45);
 
             string status = engine.Active ? "[🌶️ ACTIVE]  —  F11 = PAUSE" : "[⚠ PAUSED]  —  F11 = START";
@@ -246,7 +246,9 @@ namespace SpicyLamar
 
             // Footer: hotkey cheat-sheet
             g.DrawLine(linePen, 20, 452, 740, 452);
-            g.DrawString("F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ANSWER (MAX 3/CALL)",
+            g.DrawString(AnswerEngine.BOUNDED_MODE
+                    ? "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ANSWER (MAX 3/CALL)"
+                    : "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ALWAYS-ON ATTENTION",
                 monoFont, dimBrush, 20, 462);
         }
 
@@ -332,12 +334,18 @@ namespace SpicyLamar
         private System.Threading.Timer pollTimer;
         private long lastFireTick = 0;
 
-        // ── Answer-episode limiter ──────────────────────────────────────────
-        // Buttons must NOT be clicked as infinite: at most MAX_ATTEMPTS_PER_EPISODE
-        // cascades per ringing episode, spaced MIN_RETRY_TICKS apart. A quiet
-        // period of EPISODE_RESET_TICKS re-arms the attempts for the next call.
-        private const long MIN_RETRY_TICKS      = 1500 * 10000;   // 1500 ms in 100-ns ticks
-        private const long EPISODE_RESET_TICKS  = 10000 * 10000;  // 10000 ms in 100-ns ticks
+        // ── Answer engine rate control ──────────────────────────────────────
+        // BOUNDED_MODE=false (default): ALWAYS-ON ATTENTION — while a
+        // RingCentral Phone window exists, Spicy Lamar relentlessly focuses
+        // it and fires the Alt+F1 cascade, throttled only by DEBOUNCE_TICKS.
+        // The app never goes quiet; use F11 (pause/start) to silence it.
+        // BOUNDED_MODE=true: at most MAX_ATTEMPTS_PER_EPISODE cascades per
+        // ringing episode, spaced MIN_RETRY_TICKS apart, re-armed after
+        // EPISODE_RESET_TICKS of quiet (buttons not clicked as infinite).
+        public const bool BOUNDED_MODE = false;
+        private const long DEBOUNCE_TICKS         = 500 * 10000;    // 500 ms in 100-ns ticks
+        private const long MIN_RETRY_TICKS        = 1500 * 10000;   // 1500 ms in 100-ns ticks
+        private const long EPISODE_RESET_TICKS    = 10000 * 10000;  // 10000 ms in 100-ns ticks
         private const int  MAX_ATTEMPTS_PER_EPISODE = 3;
         private int episodeAttempts = 0;
         private bool capLogged = false;
@@ -372,7 +380,7 @@ namespace SpicyLamar
             const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
             hookHandle = SetWinEventHook(0x0003, 0x800C, IntPtr.Zero, dele, 0, 0,
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-            Log("Spicy Lamar v4.1 online. Hotkeys: F9 dashboard, F11 pause/start, F12 exit.");
+            Log("Spicy Lamar v4.2 online. Hotkeys: F9 dashboard, F11 pause/start, F12 exit.");
             Log("Engine initialized. Call-event sensors active.");
 
             // Cache-refresh poll: 20ms interval matching C++ version.
@@ -383,9 +391,13 @@ namespace SpicyLamar
 
         private void PollCheck(object state)
         {
-            // Refresh the cached target window only. The answer cascade fires
-            // strictly from ringing/activation events.
-            cachedTarget = FindRingCentralWindow();
+            // ALWAYS-ON ATTENTION poll: hunt for the RingCentral Phone window
+            // and attend to it — focus + Alt+F1 answer cascade (throttled by
+            // the engine's debounce). The window-event hook only makes it
+            // respond faster; it is NOT required for it to work.
+            IntPtr found = FindRingCentralWindow();
+            cachedTarget = found;
+            if (found != IntPtr.Zero) TryFire(found);
         }
 
         // Same title match set as the C++ version.
@@ -449,33 +461,46 @@ namespace SpicyLamar
             if (target == IntPtr.Zero) target = cachedTarget;
             if (target == IntPtr.Zero) return;
 
-            // ── Answer-episode limiter ─────────────────────────────────────
-            // Bounded attempts per ringing episode; never an infinite click loop.
+            // ── Rate control ─────────────────────────────────────────────────
+            // ALWAYS-ON ATTENTION (default): keep focusing + answering the
+            // target window for as long as it exists — never goes quiet —
+            // throttled only by the debounce. BOUNDED_MODE instead bounds
+            // the cascades per ringing episode.
             long now = DateTime.UtcNow.Ticks;
             lock (fireLock)
             {
                 long last = Interlocked.Read(ref lastFireTick);
-                if (last == 0 || (now - last) > EPISODE_RESET_TICKS)
+                if (BOUNDED_MODE)
                 {
-                    episodeAttempts = 0;   // new episode: re-arm
-                    capLogged = false;
-                }
-                if (episodeAttempts >= MAX_ATTEMPTS_PER_EPISODE)
-                {
-                    if (!capLogged)
+                    if (last == 0 || (now - last) > EPISODE_RESET_TICKS)
                     {
-                        Log(string.Format(
-                            "Episode cap reached ({0} attempts) — Alt+F1 idle until next call event",
-                            MAX_ATTEMPTS_PER_EPISODE));
-                        capLogged = true;
+                        episodeAttempts = 0;   // new episode: re-arm
+                        capLogged = false;
                     }
-                    return;
+                    if (episodeAttempts >= MAX_ATTEMPTS_PER_EPISODE)
+                    {
+                        if (!capLogged)
+                        {
+                            Log(string.Format(
+                                "Episode cap reached ({0} attempts) — Alt+F1 idle until next call event",
+                                MAX_ATTEMPTS_PER_EPISODE));
+                            capLogged = true;
+                        }
+                        return;
+                    }
+                    if (last != 0 && (now - last) < MIN_RETRY_TICKS)
+                    {
+                        return; // too soon after previous attempt
+                    }
+                    episodeAttempts++;
                 }
-                if (last != 0 && (now - last) < MIN_RETRY_TICKS)
+                else
                 {
-                    return; // too soon after previous attempt
+                    if (last != 0 && (now - last) < DEBOUNCE_TICKS)
+                    {
+                        return; // relentless, but throttled
+                    }
                 }
-                episodeAttempts++;
                 Interlocked.Exchange(ref lastFireTick, now);
             }
 

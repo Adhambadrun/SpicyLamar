@@ -6,7 +6,7 @@ title SpicyLamar - Portable One-File Build
 :: build_portable.bat - one double-click C++ build.
 :: This is a friendly wrapper around build\build.bat.
 echo ==========================================================
-echo  SPICY LAMAR v4.1 - PORTABLE ONE-FILE BUILD
+echo  SPICY LAMAR v4.2 - PORTABLE ONE-FILE BUILD
 echo ==========================================================
 echo.
 
