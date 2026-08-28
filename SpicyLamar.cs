@@ -487,7 +487,7 @@ namespace SpicyLamar
 
             // Fall back to the cached target window (parity with the C++ version)
             if (target == IntPtr.Zero) target = cachedTarget;
-            if (target == IntPtr.Zero) return;
+            if (target == IntPtr.Zero || !IsWindow(target)) return;
 
             // ── Rate control ─────────────────────────────────────────────────
             // ALWAYS-ON ATTENTION (default): keep focusing + answering the
@@ -663,6 +663,7 @@ namespace SpicyLamar
         [DllImport("user32.dll", CharSet = CharSet.Auto)] static extern IntPtr FindWindowEx(IntPtr parentHandle, IntPtr childAfter, string lclassName, string windowTitle);
         [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")] static extern bool IsWindow(IntPtr hWnd);
         [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
         [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hWnd);
         [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr hWnd);
