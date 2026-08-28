@@ -1,5 +1,5 @@
 // ═════════════════════════════════════════════════════════════════════════════
-// SPICY LAMAR v4.0 // RINGCENTRAL AUTO-ANSWER // SINGLE-FILE MONOLITHIC SOURCE
+// SPICY LAMAR v4.1 // SINGLE-FILE MONOLITHIC SOURCE
 // TARGET PLATFORM: WINDOWS 10/11 x64 (PORTABLE, STATICALLY LINKED)
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -79,10 +79,12 @@ using Microsoft::WRL::ComPtr;
 #endif
 
 namespace SL {
-    // Identity Configuration
-    constexpr wchar_t APP_NAME[]           = L"Spicy Lamar // RingCentral Auto-Answer";
-    constexpr wchar_t APP_CLASS_NAME[]     = L"SpicyLamar_AutoAnswer_v4";
-    constexpr wchar_t APP_MUTEX_NAME[]     = L"Global\\SpicyLamar_AutoAnswer_v4";
+    // Identity Configuration — the product is named ONLY "Spicy Lamar".
+    constexpr wchar_t APP_NAME[]           = L"Spicy Lamar";
+    constexpr wchar_t APP_CLASS_NAME[]     = L"SpicyLamar_v4";
+    constexpr wchar_t APP_MUTEX_NAME[]     = L"Global\\SpicyLamar_v4_Mutex";
+    constexpr wchar_t APP_MUTEX_FALLBACK[] = L"Local\\SpicyLamar_v4_Mutex";
+    constexpr wchar_t APP_VERSION[]        = L"Spicy Lamar v4.1";
     constexpr wchar_t TARGET_WINDOW_TITLE[]= L"RingCentral Phone";
     constexpr wchar_t TARGET_CHILD_CLASS[] = L"Chrome_RenderWidgetHostHWND";
 
@@ -109,9 +111,17 @@ namespace SL {
     constexpr COLORREF CLR_TEXT_DIM       = RGB(180, 180, 180);
 
     // Performance & Telemetry Constants
-    constexpr DWORD   DEFAULT_DEBOUNCE_MS  = 500;
     constexpr DWORD   DEFAULT_POLL_MS      = 20;
     constexpr int     MAX_TELEMETRY_LOGS   = 15;
+
+    // Answer-episode limiter — the answer shortcut (Alt+F1) is NEVER pressed
+    // infinitely: at most ANSWER_MAX_ATTEMPTS cascades per ringing episode,
+    // spaced at least ANSWER_MIN_RETRY_MS apart. A quiet period of
+    // ANSWER_EPISODE_MS re-arms the attempts for the next call.
+    constexpr DWORD   ANSWER_MIN_RETRY_MS  = 1500;
+    constexpr int     ANSWER_MAX_ATTEMPTS  = 3;
+    constexpr DWORD   ANSWER_EPISODE_MS    = 10000;
+
     constexpr int     HIST_BUCKETS         = 5;
     constexpr DWORD   STATS_REFRESH_MS     = 250;
     constexpr int     DASH_WIDTH           = 780;
@@ -338,36 +348,54 @@ namespace SL {
             return inst; 
         }
 
-        void Initialize() { 
-            active = true; 
-            last_fire_tick = 0; 
+        void Initialize() {
+            active = true;
+            attempts = 0;
+            last_attempt_tick = 0;
+            cap_logged = false;
         }
 
         void SetActive(bool a) { active = a; }
         bool IsActive() const { return active; }
 
-        bool TryAnswer(HWND hint, uint32_t chan, bool bypassDebounce = false) {
+        bool TryAnswer(HWND hint, uint32_t chan, bool force = false) {
             if (!active) return false;
 
 #ifdef BENCHMARK
-            bypassDebounce = true;
+            force = true;
 #endif
-
-            LARGE_INTEGER now = StatsTracker::Instance().QpcNow();
-            if (!bypassDebounce && last_fire_tick.load() != 0) {
-                LARGE_INTEGER prev;
-                prev.QuadPart = (LONGLONG)last_fire_tick.load();
-                uint64_t elapsed_us = StatsTracker::Instance().DeltaMicros(prev, now);
-                if (elapsed_us < ((uint64_t)DEFAULT_DEBOUNCE_MS * 1000ULL)) {
-                    return false; // Debounce active
-                }
-            }
 
             HWND m = hint;
             if (!m || !IsWindow(m)) {
                 m = WindowCache::Instance().FindRingCentral();
             }
             if (!m || !IsWindow(m)) return false;
+
+            // ── Answer-episode limiter ─────────────────────────────────────
+            // Buttons must NOT be clicked as infinite: bound the number of
+            // cascades per ringing episode and space them out. Only the
+            // benchmark may bypass the limiter.
+            if (!force) {
+                ULONGLONG now = GetTickCount64();
+                if (last_attempt_tick.load() == 0 ||
+                    (now - last_attempt_tick.load()) > ANSWER_EPISODE_MS) {
+                    attempts.store(0);        // new episode: re-arm attempts
+                    cap_logged.store(false);
+                }
+                if (attempts.load() >= ANSWER_MAX_ATTEMPTS) {
+                    if (!cap_logged.exchange(true)) {
+                        LOG_WRN(L"Episode cap reached (%d attempts) — Alt+F1 idle until next call event",
+                                ANSWER_MAX_ATTEMPTS);
+                    }
+                    return false;
+                }
+                if (last_attempt_tick.load() != 0 &&
+                    (now - last_attempt_tick.load()) < ANSWER_MIN_RETRY_MS) {
+                    return false;             // too soon after previous attempt
+                }
+                attempts.store(attempts.load() + 1);
+                last_attempt_tick.store(now);
+            }
 
             LARGE_INTEGER t0 = StatsTracker::Instance().QpcNow();
 
@@ -428,7 +456,6 @@ namespace SL {
             keybd_event(VK_CONTROL, 0x1D, KEYEVENTF_KEYUP, 0);
 
             LARGE_INTEGER t1 = StatsTracker::Instance().QpcNow();
-            last_fire_tick.store((uint64_t)now.QuadPart);
             StatsTracker::Instance().RecordAnswer(t0, t1, 7, chan);
 
             uint64_t lat = StatsTracker::Instance().DeltaMicros(t0, t1);
@@ -437,9 +464,11 @@ namespace SL {
         }
 
     private:
-        Engine() : active(true), last_fire_tick(0) {}
-        std::atomic<bool> active; 
-        std::atomic<uint64_t> last_fire_tick;
+        Engine() : active(true), attempts(0), last_attempt_tick(0), cap_logged(false) {}
+        std::atomic<bool> active;
+        std::atomic<int> attempts;
+        std::atomic<ULONGLONG> last_attempt_tick;
+        std::atomic<bool> cap_logged;
     };
 }
 
@@ -447,17 +476,26 @@ namespace SL {
 // DETECTION HOOKS (WINEVENT + SHELLHOOK)
 // ─────────────────────────────────────────────────────────────────────────────
 namespace SL {
+    // Only these events indicate fresh call activity (ringing / call window
+    // shown / activation). Firing on every window event would machine-gun
+    // the answer shortcut at an idle window — which must never happen.
+    inline bool IsAnswerTriggerEvent(DWORD event) {
+        return event == EVENT_SYSTEM_FOREGROUND  // 0x0003 window activated
+            || event == EVENT_OBJECT_SHOW        // 0x8002 window shown (call popup)
+            || event == EVENT_OBJECT_NAMECHANGE; // 0x800C title change (call state)
+    }
+
     inline void CALLBACK GlobalWinEventProc(
-        HWINEVENTHOOK hWinEventHook, 
-        DWORD event, 
-        HWND hwnd, 
-        LONG idObject, 
-        LONG idChild, 
-        DWORD idEventThread, 
-        DWORD dwmsEventTime) 
+        HWINEVENTHOOK hWinEventHook,
+        DWORD event,
+        HWND hwnd,
+        LONG idObject,
+        LONG idChild,
+        DWORD idEventThread,
+        DWORD dwmsEventTime)
     {
         if (idObject != OBJID_WINDOW || hwnd == nullptr) return;
-        if (event == EVENT_OBJECT_DESTROY) return;
+        if (!IsAnswerTriggerEvent(event)) return;
 
         HWND root = GetAncestor(hwnd, GA_ROOT);
         if (!root) root = hwnd;
@@ -502,7 +540,7 @@ namespace SL {
             hwnd = CreateWindowExW(
                 WS_EX_TOPMOST, 
                 APP_CLASS_NAME, 
-                L"Spicy Lamar v4.0 // RingCentral Auto-Answer", 
+                APP_VERSION, 
                 WS_POPUP | WS_CAPTION | WS_SYSMENU, 
                 100, 100, 
                 DASH_WIDTH, DASH_HEIGHT, 
@@ -574,12 +612,39 @@ namespace SL {
             Shell_NotifyIconW(NIM_ADD, &nid_);
         }
 
+        void UpdateTrayTip() {
+            wchar_t tip[128];
+            if (Engine::Instance().IsActive()) {
+                SL_WCSCPY(nid_.szTip, APP_NAME);
+            } else {
+                SL_SWPRINTF(tip, L"%ls — PAUSED (F11 to start)", APP_NAME);
+                SL_WCSCPY(nid_.szTip, tip);
+            }
+            Shell_NotifyIconW(NIM_MODIFY, &nid_);
+        }
+
+        // F11 / tray-menu Pause-Start. Always logs so the state change is
+        // visible on the dashboard, and mirrors it into the tray tooltip.
+        void ToggleEngine() {
+            bool nowActive = !Engine::Instance().IsActive();
+            Engine::Instance().SetActive(nowActive);
+            if (nowActive) {
+                LOG_INF(L"Engine STARTED (F11) — auto-answer active");
+            } else {
+                LOG_WRN(L"Engine PAUSED (F11) — press F11 to start");
+            }
+            UpdateTrayTip();
+            if (visible) InvalidateRect(hwnd, nullptr, FALSE);
+        }
+
         void ShowTrayMenu() {
+            bool active = Engine::Instance().IsActive();
             HMENU hMenu = CreatePopupMenu();
-            InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, IDM_OPEN_SETTINGS, L"Open Dashboard");
-            InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_STRING, IDM_ADD_DEVICE, L"Pause/Resume");
+            InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, IDM_OPEN_SETTINGS, L"Open Dashboard (F9)");
+            InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_STRING, IDM_ADD_DEVICE,
+                        active ? L"Pause (F11)" : L"Start (F11)");
             InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-            InsertMenuW(hMenu, 3, MF_BYPOSITION | MF_STRING, IDM_REMOVE_ICON, L"Exit");
+            InsertMenuW(hMenu, 3, MF_BYPOSITION | MF_STRING, IDM_REMOVE_ICON, L"Exit (F12)");
 
             POINT pt;
             GetCursorPos(&pt);
@@ -599,16 +664,16 @@ namespace SL {
                 return 0; 
             }
 
-            if (m == WM_TIMER) { 
+            if (m == WM_TIMER) {
                 if (wp == 1) {
                     if (self.visible) InvalidateRect(w, nullptr, FALSE);
                 } else if (wp == 2) {
-                    HWND found = WindowCache::Instance().FindRingCentral();
-                    if (found) {
-                        Engine::Instance().TryAnswer(found, 2);
-                    }
+                    // Cache-refresh poll only. The answer cascade fires strictly
+                    // from ringing/activation events — never from the raw poll —
+                    // so an idle RingCentral window is never re-answered forever.
+                    WindowCache::Instance().FindRingCentral();
                 }
-                return 0; 
+                return 0;
             }
 
             if (m == WM_TRAYICON) {
@@ -624,7 +689,7 @@ namespace SL {
                 UINT id = LOWORD(wp);
                 switch (id) {
                     case IDM_ADD_DEVICE:
-                        Engine::Instance().SetActive(!Engine::Instance().IsActive());
+                        self.ToggleEngine();
                         break;
                     case IDM_OPEN_SETTINGS:
                         self.Show(!self.visible);
@@ -640,7 +705,7 @@ namespace SL {
 
             if (m == WM_HOTKEY) { 
                 if (wp == HK_TOGGLE_DASHBOARD) self.Show(!self.visible);
-                if (wp == HK_PAUSE_RESUME) Engine::Instance().SetActive(!Engine::Instance().IsActive());
+                if (wp == HK_PAUSE_RESUME) self.ToggleEngine();
                 if (wp == HK_EMERGENCY_EXIT) PostQuitMessage(0);
                 return 0;
             }
@@ -710,24 +775,26 @@ namespace SL {
 
             // Title Banner
             SetTextColor(mdc, CLR_CHILI_RED);
-            const wchar_t* titleText = L"🌶️ SPICY LAMAR v4.0 // RINGCENTRAL AUTO-ANSWER";
+            const wchar_t* titleText = L"🌶️ SPICY LAMAR v4.1";
             TextOutW(mdc, 20, 20, titleText, (int)wcslen(titleText));
 
-            // Status Badge
+            // Status Badge with F11 hint
             SetTextColor(mdc, Engine::Instance().IsActive() ? CLR_NEON_GREEN : CLR_CHILI_RED);
-            const wchar_t* statusStr = Engine::Instance().IsActive() ? L"STATUS: [🌶️ ACTIVE]" : L"STATUS: [⚠ PAUSED]";
+            const wchar_t* statusStr = Engine::Instance().IsActive()
+                ? L"STATUS: [🌶️ ACTIVE]  —  F11 = PAUSE"
+                : L"STATUS: [⚠ PAUSED]  —  F11 = START";
             TextOutW(mdc, 20, 55, statusStr, (int)wcslen(statusStr));
 
             // Metric Counters
-            SetTextColor(mdc, CLR_TEXT_DIM); 
-            wchar_t stats[256]; 
-            SL_SWPRINTF(stats, L"CALLS: %llu   UPTIME: %llus   LAST: %lluus  AVG: %lluus  BEST: %lluus", 
-                       StatsTracker::Instance().TotalCalls(), 
-                       StatsTracker::Instance().GetUptimeSec(), 
+            SetTextColor(mdc, CLR_TEXT_DIM);
+            wchar_t stats[256];
+            SL_SWPRINTF(stats, L"CALLS: %llu   UPTIME: %llus   LAST: %lluus  AVG: %lluus  BEST: %lluus",
+                       StatsTracker::Instance().TotalCalls(),
+                       StatsTracker::Instance().GetUptimeSec(),
                        StatsTracker::Instance().LastLatency(),
                        StatsTracker::Instance().AvgLatency(),
                        StatsTracker::Instance().BestLatency());
-            TextOutW(mdc, 240, 55, stats, (int)wcslen(stats));
+            TextOutW(mdc, 20, 75, stats, (int)wcslen(stats));
 
             // Telemetry Section
             SetTextColor(mdc, CLR_CHILI_RED);
@@ -761,12 +828,20 @@ namespace SL {
             TextOutW(mdc, 20, 245, logText, (int)wcslen(logText));
 
             auto logs = MemoryLogger::Instance().GetRecentLogs();
-            for (size_t i = 0; i < logs.size() && i < 11; ++i) {
+            for (size_t i = 0; i < logs.size() && i < 10; ++i) {
                 SetTextColor(mdc, CLR_NEON_GREEN);
-                wchar_t line[300]; 
+                wchar_t line[300];
                 SL_SWPRINTF(line, L"%ls [%ls] %ls", logs[i].timestamp.c_str(), logs[i].level.c_str(), logs[i].message.c_str());
                 TextOutW(mdc, 20, 270 + (int)i * 20, line, (int)wcslen(line));
             }
+
+            // Footer: hotkey cheat-sheet
+            MoveToEx(mdc, 20, 452, nullptr);
+            LineTo(mdc, DASH_WIDTH - 20, 452);
+            SetTextColor(mdc, CLR_TEXT_DIM);
+            const wchar_t* footerText =
+                L"F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ANSWER (MAX 3/CALL)";
+            TextOutW(mdc, 20, 462, footerText, (int)wcslen(footerText));
 
             // Blit buffer to screen
             BitBlt(hdc, 0, 0, r.right, r.bottom, mdc, 0, 0, SRCCOPY); 
@@ -795,9 +870,17 @@ namespace SL {
 // ─────────────────────────────────────────────────────────────────────────────
 #ifndef BENCHMARK
 static int RunApp(HINSTANCE h) {
-    // Single-instance enforcement
+    // Single-instance enforcement. Creating a Global\ mutex can be denied for
+    // non-elevated sessions — fall back to the session-local namespace so the
+    // portable exe always starts, elevated or not.
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, SL::APP_MUTEX_NAME);
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    DWORD mutexErr = (hMutex != nullptr) ? GetLastError() : ERROR_ACCESS_DENIED;
+    if (hMutex == nullptr || mutexErr == ERROR_ACCESS_DENIED) {
+        if (hMutex) CloseHandle(hMutex);
+        hMutex = CreateMutexW(nullptr, TRUE, SL::APP_MUTEX_FALLBACK);
+        mutexErr = (hMutex != nullptr) ? GetLastError() : ERROR_ACCESS_DENIED;
+    }
+    if (mutexErr == ERROR_ALREADY_EXISTS) {
         if (hMutex) CloseHandle(hMutex);
         return 0;
     }
@@ -815,11 +898,18 @@ static int RunApp(HINSTANCE h) {
     }
 
     HWND w = SL::Terminal::Instance().GetHwnd();
-    RegisterHotKey(w, SL::HK_TOGGLE_DASHBOARD, MOD_NOREPEAT, VK_F9);
-    RegisterHotKey(w, SL::HK_PAUSE_RESUME,     MOD_NOREPEAT, VK_F11);
-    RegisterHotKey(w, SL::HK_EMERGENCY_EXIT,   MOD_NOREPEAT, VK_F12);
+    // Verify every hotkey really registered — if another app owns the key,
+    // say so on the dashboard instead of failing silently.
+    if (!RegisterHotKey(w, SL::HK_TOGGLE_DASHBOARD, MOD_NOREPEAT, VK_F9))
+        LOG_WRN(L"F9 hotkey registration failed (already taken by another app?)");
+    if (!RegisterHotKey(w, SL::HK_PAUSE_RESUME, MOD_NOREPEAT, VK_F11))
+        LOG_ERR(L"F11 hotkey registration failed (already taken by another app?)");
+    if (!RegisterHotKey(w, SL::HK_EMERGENCY_EXIT, MOD_NOREPEAT, VK_F12))
+        LOG_WRN(L"F12 hotkey registration failed (already taken by another app?)");
 
-    LOG_INF(L"Spicy Lamar v4.0 Online. RingCentral Auto-Answer active.");
+    LOG_INF(L"Spicy Lamar v4.1 online. Hotkeys: F9 dashboard, F11 pause/start, F12 exit.");
+    LOG_INF(L"Auto-answer armed: Alt+F1 cascade fires on call events (max %d per call).",
+            SL::ANSWER_MAX_ATTEMPTS);
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0)) {

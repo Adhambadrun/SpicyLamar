@@ -11,7 +11,7 @@ add_executable(SpicyLamarAutoAnswer WIN32
 )
 
 set_target_properties(SpicyLamarAutoAnswer PROPERTIES
-    OUTPUT_NAME "SpicyLamar RingCentral Auto-Answer"
+    OUTPUT_NAME "SpicyLamar"
 )
 
 target_compile_definitions(SpicyLamarAutoAnswer PRIVATE

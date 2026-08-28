@@ -8,7 +8,7 @@ pushd "%~dp0" >nul
 cd /d "%~dp0"
 
 echo ==========================================================
-echo  SPICY LAMAR v4.0 - C# INSTANT BUILD
+echo  SPICY LAMAR v4.1 - C# INSTANT BUILD
 echo ==========================================================
 
 :: ---------------------------------------------------------------------------
@@ -26,7 +26,7 @@ if not exist "%CSC%" (
 :: Output path: dist\ always (portable)
 :: ---------------------------------------------------------------------------
 if not exist "%~dp0dist" mkdir "%~dp0dist"
-set "OUT=%~dp0dist\SpicyLamar RingCentral Auto-Answer.exe"
+set "OUT=%~dp0dist\SpicyLamar.exe"
 
 :: ---------------------------------------------------------------------------
 :: Use the bundled transparent app icon and the honest manifest
@@ -40,12 +40,12 @@ if exist "resources\app.manifest" set "MANIFEST_PARAM=/win32manifest:resources\a
 :: ---------------------------------------------------------------------------
 :: Compile
 :: ---------------------------------------------------------------------------
-echo [1/2] Compiling SpicyLamarAutoAnswer.cs...
+echo [1/2] Compiling SpicyLamar.cs...
 :: /codepage:65001 keeps the UTF-8 source literals intact on any ANSI codepage.
 "%CSC%" /nologo /target:winexe /optimize+ /platform:anycpu /utf8output ^
     /codepage:65001 ^
     /r:System.dll,System.Drawing.dll,System.Windows.Forms.dll,System.Core.dll ^
-    !ICON_PARAM! !MANIFEST_PARAM! /out:"%OUT%" SpicyLamarAutoAnswer.cs
+    !ICON_PARAM! !MANIFEST_PARAM! /out:"%OUT%" SpicyLamar.cs
 
 if errorlevel 1 (
     echo [ERROR] Compilation failed - see messages above.

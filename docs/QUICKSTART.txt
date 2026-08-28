@@ -1,24 +1,30 @@
-🌶️ SPICY LAMAR / RingCentral Auto-Answer
+🌶️ SPICY LAMAR
 ═══════════════════════════════════════
 
 WHAT IT DOES:
 Automatically presses the RingCentral Phone answer shortcut (Alt+F1)
-when a RingCentral Phone window is active.
-Runs as a simple tray icon with an honest label.
+when call activity is detected in the RingCentral Phone window.
+Runs as a simple tray icon under its real name: Spicy Lamar.
+
+The answer shortcut is NEVER pressed infinitely:
+  * fires only on call events (flash / call window / activation)
+  * max 3 attempts per ringing episode
+  * at least 1.5 seconds between attempts
+  * re-arms after 10 seconds of quiet
 
 INSTALL:
 1. Build it with build_portable.bat (C++) or build.bat (C#).
-2. Copy "SpicyLamar RingCentral Auto-Answer.exe" anywhere.
+2. Copy "SpicyLamar.exe" anywhere.
 3. Double-click to run. No admin rights and no UAC prompt needed.
 4. If SmartScreen warns (unsigned exe): More info -> Run anyway,
    or right-click -> Properties -> Unblock.
 
 DASHBOARD:
-Right-click tray icon -> "Open Dashboard".
+Right-click tray icon -> "Open Dashboard (F9)".
 
 HOTKEYS:
 F9  : Show/Hide Dashboard
-F11 : Pause/Resume
+F11 : Pause/Start  (also in the tray menu, tooltip, and dashboard status)
 F12 : Exit
 
-═══════════════════════════════════
+═══════════════════════════════════════

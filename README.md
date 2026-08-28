@@ -1,33 +1,51 @@
-# 🌶️ SPICY LAMAR // RingCentral Auto-Answer
+# 🌶️ SPICY LAMAR
 
 ## Overview
-A transparent, portable Windows tray utility that detects an active
-**RingCentral Phone** window and automatically presses the app's answer
-shortcut (Alt+F1) through a redundant keyboard-event cascade.
+A transparent, portable Windows tray utility that detects RingCentral Phone
+call activity and automatically presses the app's answer shortcut (**Alt+F1**)
+through a redundant keyboard-event cascade.
 
-The app is **not** disguised as a Bluetooth utility and does not impersonate
-Microsoft or Windows components. It shows its real name, its own icon, and an
-honest version/company resource block.
+The app shows its real name — **Spicy Lamar** — its own icon, and an honest
+version/company resource block everywhere: window title, tray tooltip,
+dashboard, exe file name, and file properties.
+
+**The answer button is never clicked infinitely.** The Alt+F1 cascade fires
+only on real call activity (taskbar flash, call window shown, window
+activation) and is hard-limited to **3 attempts per ringing episode**, spaced
+at least 1.5 s apart. After 10 s of quiet the counter re-arms for the next
+call. An idle RingCentral window is never re-answered.
 
 ## Quick Start (portable .exe)
-1. Grab `dist\SpicyLamar RingCentral Auto-Answer.exe` (single file, portable)
+1. Grab `dist\SpicyLamar.exe` (single file, portable)
    or `dist\SpicyLamar-Portable.zip`.
 2. Double-click it. No installation, no admin rights, no UAC prompt,
    no VC++ Redistributables.
 3. A Spicy Lamar tray icon appears. The engine runs in the background.
 4. Open the dashboard with **F9**, or right-click the tray icon →
-   **Open Dashboard**.
+   **Open Dashboard (F9)**.
 
 > If Windows SmartScreen shows "Windows protected your PC" on first run
 > (normal for an unsigned portable exe), click **More info → Run anyway**.
 > You can also right-click the exe → Properties → **Unblock**.
+
+## Controls
+| Key | Action |
+| --- | ------ |
+| **F9**  | Show / hide the dashboard |
+| **F11** | **Pause / Start** the engine (also in the tray menu) |
+| **F12** | Exit |
+| **Alt+F1** | The answer shortcut Spicy Lamar sends for you |
+
+Pause/Start is always visible: the dashboard status line, the tray tooltip
+(`Spicy Lamar — PAUSED (F11 to start)`), and the tray menu label all track it,
+and every toggle is written to the system log.
 
 ## Build Instructions
 
 ### C++ (Recommended for Performance)
 1. Double-click `build_portable.bat`.
    - Or: `powershell -ExecutionPolicy Bypass -File build\build.ps1`
-2. Find the executable in `dist\SpicyLamar RingCentral Auto-Answer.exe`.
+2. Find the executable in `dist\SpicyLamar.exe`.
 
 The result is statically linked (`/MT`) and only touches DLLs that ship with
 Windows 10/11. The embedded manifest requests no elevation (`asInvoker`), so
@@ -35,12 +53,12 @@ the exe starts with a plain double-click.
 
 ### C# (Instant Build)
 1. Run `build.bat`.
-2. Find `dist\SpicyLamar RingCentral Auto-Answer.exe`.
+2. Find the executable in `dist\SpicyLamar.exe`.
 
 ### Helpers in `build\`
 - `build.ps1` — full PowerShell C++ build
 - `verify_deps.ps1` — checks that all build tools are installed
-- `verify_artifact.ps1` — verifies the built `dist\SpicyLamar RingCentral Auto-Answer.exe`
+- `verify_artifact.ps1` — verifies the built `dist\SpicyLamar.exe`
 
 ## Portability
 Zero external dependencies. Static linking. No installation or VC++

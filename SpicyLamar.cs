@@ -24,11 +24,11 @@ namespace SpicyLamar
             Mutex mutex = null;
             try
             {
-                mutex = new Mutex(true, @"Global\SpicyLamarAutoAnswerV4", out createdNew);
+                mutex = new Mutex(true, @"Global\SpicyLamarV4", out createdNew);
             }
             catch (UnauthorizedAccessException)
             {
-                mutex = new Mutex(true, @"Local\SpicyLamarAutoAnswerV4", out createdNew);
+                mutex = new Mutex(true, @"Local\SpicyLamarV4", out createdNew);
             }
 
             using (mutex)
@@ -54,7 +54,7 @@ namespace SpicyLamar
             trayIcon = new NotifyIcon()
             {
                 Icon = LoadAppIcon(),
-                Text = "Spicy Lamar Auto-Answer",
+                Text = "Spicy Lamar",
                 Visible = true,
                 ContextMenu = BuildMenu()
             };
@@ -63,11 +63,17 @@ namespace SpicyLamar
                 dashboard.ToggleVisibility();
             };
 
+            // Mirror pause/start state into the tray tooltip
+            engine.ActiveChanged += delegate(bool active)
+            {
+                trayIcon.Text = active ? "Spicy Lamar" : "Spicy Lamar — PAUSED (F11 to start)";
+            };
+
             dashboard = new TerminalForm(engine);
 
             // Global Hotkeys (with NoRepeat to match C++ version)
             HotKeyManager.RegisterHotKey(dashboard.Handle, 1, (uint)HotKeyManager.KeyModifiers.NoRepeat, (uint)Keys.F9);  // Toggle Dashboard
-            HotKeyManager.RegisterHotKey(dashboard.Handle, 2, (uint)HotKeyManager.KeyModifiers.NoRepeat, (uint)Keys.F11); // Pause / Resume
+            HotKeyManager.RegisterHotKey(dashboard.Handle, 2, (uint)HotKeyManager.KeyModifiers.NoRepeat, (uint)Keys.F11); // Pause / Start
             HotKeyManager.RegisterHotKey(dashboard.Handle, 3, (uint)HotKeyManager.KeyModifiers.NoRepeat, (uint)Keys.F12); // Exit
         }
 
@@ -91,16 +97,16 @@ namespace SpicyLamar
         private ContextMenu BuildMenu()
         {
             ContextMenu menu = new ContextMenu();
-            menu.MenuItems.Add("Open Dashboard", delegate(object s, EventArgs e)
+            menu.MenuItems.Add("Open Dashboard (F9)", delegate(object s, EventArgs e)
             {
                 dashboard.ToggleVisibility();
             });
-            menu.MenuItems.Add("Pause/Resume", delegate(object s, EventArgs e)
+            menu.MenuItems.Add("Pause/Start (F11)", delegate(object s, EventArgs e)
             {
-                engine.Active = !engine.Active;
+                engine.Toggle();
             });
             menu.MenuItems.Add("-");
-            menu.MenuItems.Add("Exit", delegate(object s, EventArgs e)
+            menu.MenuItems.Add("Exit (F12)", delegate(object s, EventArgs e)
             {
                 ExitApp();
             });
@@ -152,7 +158,7 @@ namespace SpicyLamar
         public TerminalForm(AnswerEngine engine)
         {
             this.engine = engine;
-            this.Text = "Spicy Lamar v4.0 // RingCentral Auto-Answer";
+            this.Text = "Spicy Lamar v4.1";
             this.Size = new Size(780, 520);
             this.BackColor = Color.FromArgb(5, 5, 5);
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -196,7 +202,7 @@ namespace SpicyLamar
             {
                 int id = m.WParam.ToInt32();
                 if (id == 1) ToggleVisibility();
-                if (id == 2) engine.Active = !engine.Active;
+                if (id == 2) engine.Toggle();
                 if (id == 3) Application.Exit();
             }
             base.WndProc(ref m);
@@ -206,10 +212,10 @@ namespace SpicyLamar
         {
             Graphics g = e.Graphics;
 
-            g.DrawString("🌶️ SPICY LAMAR v4.0 // RINGCENTRAL AUTO-ANSWER", headerFont, chiliBrush, 20, 20);
+            g.DrawString("🌶️ SPICY LAMAR v4.1", headerFont, chiliBrush, 20, 20);
             g.DrawLine(linePen, 20, 45, 740, 45);
 
-            string status = engine.Active ? "[🌶️ ACTIVE]" : "[⚠ PAUSED]";
+            string status = engine.Active ? "[🌶️ ACTIVE]  —  F11 = PAUSE" : "[⚠ PAUSED]  —  F11 = START";
             g.DrawString(string.Format("STATUS: {0}", status), monoFont, engine.Active ? neonBrush : chiliBrush, 20, 55);
 
             string uptime = DateTime.Now.Subtract(Process.GetCurrentProcess().StartTime).ToString(@"hh\:mm\:ss");
@@ -217,7 +223,7 @@ namespace SpicyLamar
             if (best == long.MaxValue) best = 0;
             g.DrawString(string.Format("CALLS: {0}   UPTIME: {1}   LAST: {2}us  AVG: {3}us  BEST: {4}us",
                 engine.CallCount, uptime, engine.LastLatency, engine.AvgLatency, best),
-                monoFont, dimBrush, 220, 55);
+                monoFont, dimBrush, 20, 75);
 
             g.DrawString("[ REAL-TIME TELEMETRY ]", monoFont, chiliBrush, 20, 95);
 
@@ -232,11 +238,16 @@ namespace SpicyLamar
             }
 
             g.DrawString("[ SYSTEM LOG ]", monoFont, chiliBrush, 20, 245);
-            List<string> recentLogs = engine.GetLogs().Take(11).ToList();
+            List<string> recentLogs = engine.GetLogs().Take(10).ToList();
             for (int i = 0; i < recentLogs.Count; i++)
             {
                 g.DrawString(recentLogs[i], monoFont, neonBrush, 20, 270 + (i * 20));
             }
+
+            // Footer: hotkey cheat-sheet
+            g.DrawLine(linePen, 20, 452, 740, 452);
+            g.DrawString("F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ANSWER (MAX 3/CALL)",
+                monoFont, dimBrush, 20, 462);
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -268,6 +279,25 @@ namespace SpicyLamar
     class AnswerEngine : IDisposable
     {
         public volatile bool Active = true;
+
+        // Pause/Start with visible feedback (log line + tray tooltip update)
+        public delegate void ActiveChangedHandler(bool active);
+        public event ActiveChangedHandler ActiveChanged;
+
+        public void SetActive(bool value)
+        {
+            Active = value;
+            Log(value
+                ? "Engine STARTED (F11) — auto-answer active"
+                : "Engine PAUSED (F11) — press F11 to start");
+            if (ActiveChanged != null) ActiveChanged(value);
+        }
+
+        public void Toggle()
+        {
+            SetActive(!Active);
+        }
+
         private long callCount = 0;
         public long CallCount { get { return Interlocked.Read(ref callCount); } }
         private long lastLatency = 0;
@@ -301,9 +331,23 @@ namespace SpicyLamar
         private IntPtr hookHandle = IntPtr.Zero;
         private System.Threading.Timer pollTimer;
         private long lastFireTick = 0;
-        private const long DEBOUNCE_TICKS = 1200 * 10000; // 1200 ms in 100-ns ticks
+
+        // ── Answer-episode limiter ──────────────────────────────────────────
+        // Buttons must NOT be clicked as infinite: at most MAX_ATTEMPTS_PER_EPISODE
+        // cascades per ringing episode, spaced MIN_RETRY_TICKS apart. A quiet
+        // period of EPISODE_RESET_TICKS re-arms the attempts for the next call.
+        private const long MIN_RETRY_TICKS      = 1500 * 10000;   // 1500 ms in 100-ns ticks
+        private const long EPISODE_RESET_TICKS  = 10000 * 10000;  // 10000 ms in 100-ns ticks
+        private const int  MAX_ATTEMPTS_PER_EPISODE = 3;
+        private int episodeAttempts = 0;
+        private bool capLogged = false;
+        private readonly object fireLock = new object();
+
         private readonly object logLock = new object();
         private readonly object statsLock = new object();
+        // Plain field: IntPtr cannot be declared volatile (CS0677); pointer-sized
+        // reads/writes are atomic on x86/x64.
+        private IntPtr cachedTarget = IntPtr.Zero;
 
         // Virtual key codes and keybd_event flags
         private const byte VK_MENU = 0x12;
@@ -328,20 +372,29 @@ namespace SpicyLamar
             const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
             hookHandle = SetWinEventHook(0x0003, 0x800C, IntPtr.Zero, dele, 0, 0,
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-            Log("Engine initialized. 5-Channel Fusion sensors active.");
+            Log("Spicy Lamar v4.1 online. Hotkeys: F9 dashboard, F11 pause/start, F12 exit.");
+            Log("Engine initialized. Call-event sensors active.");
 
-            // Backup polling channel: 20ms interval matching C++ version
+            // Cache-refresh poll: 20ms interval matching C++ version.
+            // NEVER fires the cascade itself — an idle window must not be
+            // re-answered forever.
             pollTimer = new System.Threading.Timer(PollCheck, null, 100, 20);
         }
 
         private void PollCheck(object state)
         {
-            if (!Active) return;
-            IntPtr rcHwnd = FindRingCentralWindow();
-            if (rcHwnd != IntPtr.Zero)
-            {
-                TryFire(rcHwnd);
-            }
+            // Refresh the cached target window only. The answer cascade fires
+            // strictly from ringing/activation events.
+            cachedTarget = FindRingCentralWindow();
+        }
+
+        // Same title match set as the C++ version.
+        private static bool IsTargetTitle(string title)
+        {
+            return title.IndexOf("RingCentral", StringComparison.OrdinalIgnoreCase) >= 0
+                || title.IndexOf("Ring Central", StringComparison.OrdinalIgnoreCase) >= 0
+                || title.IndexOf("RingMe", StringComparison.OrdinalIgnoreCase) >= 0
+                || title.IndexOf("Glip", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private IntPtr FindRingCentralWindow()
@@ -352,8 +405,7 @@ namespace SpicyLamar
                 if (!IsWindowVisible(hWnd)) return true;
                 System.Text.StringBuilder sb = new System.Text.StringBuilder(256);
                 GetWindowText(hWnd, sb, 256);
-                string title = sb.ToString();
-                if (title.IndexOf("RingCentral Phone", StringComparison.OrdinalIgnoreCase) >= 0)
+                if (IsTargetTitle(sb.ToString()))
                 {
                     found = hWnd;
                     return false; // Stop enumeration
@@ -363,18 +415,27 @@ namespace SpicyLamar
             return found;
         }
 
+        // Only these events indicate fresh call activity (ringing / call window
+        // shown / activation). Firing on every window event would machine-gun
+        // the answer shortcut at an idle window — which must never happen.
+        private static bool IsAnswerTriggerEvent(uint eventType)
+        {
+            return eventType == 0x0003   // EVENT_SYSTEM_FOREGROUND
+                || eventType == 0x8002   // EVENT_OBJECT_SHOW (call popup)
+                || eventType == 0x800C;  // EVENT_OBJECT_NAMECHANGE (call state)
+        }
+
         private void WinEventProc(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
         {
             if (idObject != 0 || hwnd == IntPtr.Zero) return;
-            // Ignore window destroy events
-            if (eventType == 0x8001) return;
+            if (!IsAnswerTriggerEvent(eventType)) return;
 
             IntPtr root = GetAncestor(hwnd, 3); // GA_ROOT
             if (root == IntPtr.Zero) root = hwnd;
 
             System.Text.StringBuilder sb = new System.Text.StringBuilder(256);
             GetWindowText(root, sb, 256);
-            if (sb.ToString().IndexOf("RingCentral Phone", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (IsTargetTitle(sb.ToString()))
             {
                 TryFire(root);
             }
@@ -384,12 +445,39 @@ namespace SpicyLamar
         {
             if (!Active) return;
 
+            // Fall back to the cached target window (parity with the C++ version)
+            if (target == IntPtr.Zero) target = cachedTarget;
+            if (target == IntPtr.Zero) return;
+
+            // ── Answer-episode limiter ─────────────────────────────────────
+            // Bounded attempts per ringing episode; never an infinite click loop.
             long now = DateTime.UtcNow.Ticks;
-            if (now - Interlocked.Read(ref lastFireTick) < DEBOUNCE_TICKS)
+            lock (fireLock)
             {
-                return; // Debounced
+                long last = Interlocked.Read(ref lastFireTick);
+                if (last == 0 || (now - last) > EPISODE_RESET_TICKS)
+                {
+                    episodeAttempts = 0;   // new episode: re-arm
+                    capLogged = false;
+                }
+                if (episodeAttempts >= MAX_ATTEMPTS_PER_EPISODE)
+                {
+                    if (!capLogged)
+                    {
+                        Log(string.Format(
+                            "Episode cap reached ({0} attempts) — Alt+F1 idle until next call event",
+                            MAX_ATTEMPTS_PER_EPISODE));
+                        capLogged = true;
+                    }
+                    return;
+                }
+                if (last != 0 && (now - last) < MIN_RETRY_TICKS)
+                {
+                    return; // too soon after previous attempt
+                }
+                episodeAttempts++;
+                Interlocked.Exchange(ref lastFireTick, now);
             }
-            Interlocked.Exchange(ref lastFireTick, now);
 
             Stopwatch sw = Stopwatch.StartNew();
 

@@ -7,7 +7,7 @@
 #  Usage:
 #      powershell -NoProfile -ExecutionPolicy Bypass -File build\build.ps1
 #
-#  Output:  dist\SpicyLamar RingCentral Auto-Answer.exe
+#  Output:  dist\SpicyLamar.exe
 # =============================================================================
 $ErrorActionPreference = 'Stop'
 
@@ -16,12 +16,12 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $objDir   = Join-Path $repoRoot 'build\obj'
 $distDir  = Join-Path $repoRoot 'dist'
 $res      = Join-Path $repoRoot 'build\obj\app.res'
-$outExe   = Join-Path $distDir 'SpicyLamar RingCentral Auto-Answer.exe'
+$outExe   = Join-Path $distDir 'SpicyLamar.exe'
 
 Push-Location $repoRoot
 try {
     Write-Host "=========================================================="
-    Write-Host " SPICY LAMAR v4.0 - C++ PORTABLE BUILD (PS)"
+    Write-Host " SPICY LAMAR v4.1 - C++ PORTABLE BUILD (PS)"
     Write-Host "=========================================================="
 
     # --- 1. Locate Visual Studio -------------------------------------------
