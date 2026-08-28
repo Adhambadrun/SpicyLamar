@@ -370,6 +370,34 @@ namespace SpicyLamar
         private const uint WM_KEYDOWN = 0x0100;
         private const uint WM_KEYUP = 0x0101;
         private const uint WM_COMMAND = 0x0111;
+        private const uint SW_RESTORE = 0x0001;
+        private const uint SW_SHOW = 0x0004;
+
+        // INPUT struct for SendInput (hardware-level key synthesis)
+        [StructLayout(LayoutKind.Sequential)]
+        struct INPUT
+        {
+            public uint type;
+            public INPUTUNION U;
+        }
+        [StructLayout(LayoutKind.Explicit)]
+        struct INPUTUNION
+        {
+            [FieldOffset(0)] public KEYBDINPUT ki;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        struct KEYBDINPUT
+        {
+            public ushort wVk;
+            public ushort wScan;
+            public uint dwFlags;
+            public uint time;
+            public UIntPtr dwExtraInfo;
+        }
+        const uint INPUT_KEYBOARD = 1;
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
         public AnswerEngine()
         {
@@ -459,7 +487,7 @@ namespace SpicyLamar
 
             // Fall back to the cached target window (parity with the C++ version)
             if (target == IntPtr.Zero) target = cachedTarget;
-            if (target == IntPtr.Zero) return;
+            if (target == IntPtr.Zero || !IsWindow(target)) return;
 
             // ── Rate control ─────────────────────────────────────────────────
             // ALWAYS-ON ATTENTION (default): keep focusing + answering the
@@ -514,6 +542,16 @@ namespace SpicyLamar
                     child = FindWindowEx(intermediate, IntPtr.Zero, "Chrome_RenderWidgetHostHWND", null);
             }
 
+            // ── Window activation FIRST — before any key messages ─────────────
+            // PostMessage/PostMessage only reach a window that already has
+            // foreground focus. The C++ version activates the window first
+            // (restore + bring to top + foreground + child focus), then fires
+            // the cascade. Match that ordering here so keys actually land.
+            if (IsIconic(target)) ShowWindow(target, SW_RESTORE);
+            BringWindowToTop(target);
+            try { SetForegroundWindow(target); } catch { }
+            if (child != IntPtr.Zero && IsWindow(child)) try { SetFocus(child); } catch { }
+
             // Shot 1: Target window Alt+F1 Down/Up
             PostMessage(target, WM_SYSKEYDOWN, (IntPtr)VK_MENU, (IntPtr)0x20380001);
             PostMessage(target, WM_SYSKEYDOWN, (IntPtr)VK_F1,   (IntPtr)0x203B0001);
@@ -533,7 +571,15 @@ namespace SpicyLamar
             PostMessage(target, WM_KEYDOWN, (IntPtr)VK_RETURN, (IntPtr)0x001C0001);
             PostMessage(target, WM_KEYUP,   (IntPtr)VK_RETURN, (IntPtr)0xC01C0001);
 
-            // Shot 4: Simulated hardware key cascade (keybd_event)
+            // Shot 4: hardware-level keyboard input via SendInput (most reliable)
+            INPUT[] inputs = new INPUT[4];
+            inputs[0] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_MENU } } };
+            inputs[1] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_F1 } } };
+            inputs[2] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_F1, dwFlags = KEYEVENTF_KEYUP } } };
+            inputs[3] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_MENU, dwFlags = KEYEVENTF_KEYUP } } };
+            SendInput(4, inputs, Marshal.SizeOf(typeof(INPUT)));
+
+            // keybd_event legacy fallback (matches C++ Shot 4)
             keybd_event(VK_MENU, SCAN_MENU, 0, UIntPtr.Zero);
             keybd_event(VK_F1,   SCAN_F1,   0, UIntPtr.Zero);
             keybd_event(VK_F1,   SCAN_F1,   KEYEVENTF_KEYUP, UIntPtr.Zero);
@@ -542,7 +588,7 @@ namespace SpicyLamar
             // Shot 5: Direct WM_COMMAND
             PostMessage(target, WM_COMMAND, (IntPtr)1001, IntPtr.Zero);
 
-            // Shot 6: Foreground focus activation
+            // Shot 6: Foreground focus activation (re-assert after the cascade)
             try { SetForegroundWindow(target); } catch { }
 
             // Shot 7: Modifier key release safety net
@@ -617,7 +663,12 @@ namespace SpicyLamar
         [DllImport("user32.dll", CharSet = CharSet.Auto)] static extern IntPtr FindWindowEx(IntPtr parentHandle, IntPtr childAfter, string lclassName, string windowTitle);
         [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")] static extern bool IsWindow(IntPtr hWnd);
         [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hWnd);
+        [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr hWnd);
+        [DllImport("user32.dll")] static extern bool SetFocus(IntPtr hWnd);
+        [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, uint nCmdShow);
         [DllImport("user32.dll")] static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
     }
 
