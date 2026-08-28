@@ -2,11 +2,13 @@
 
 ## Overview
 A portable Windows tray utility that automatically answers RingCentral Phone
-calls by detecting call activity in the RingCentral app window and sending the
-app's answer shortcut (Alt+F1) through a redundant keyboard cascade.
+calls by watching for the RingCentral app window and sending the app's answer
+shortcut (Alt+F1) through a redundant keyboard cascade.
 
-The answer cascade is **bounded**: max 3 attempts per ringing episode, spaced
-≥ 1.5 s apart — it never clicks infinitely, and never fires at an idle window.
+**ALWAYS-ON ATTENTION (default):** while a RingCentral Phone window exists, the
+engine relentlessly focuses it and fires the cascade (one per 0.5 s) — it never
+goes quiet; F11 pauses/starts it. **Bounded mode (optional build):** fires only
+on call activity, max 3 attempts per ringing episode ≥ 1.5 s apart.
 
 ## Quick Start
 Grab `dist\SpicyLamar.exe` (or `dist\SpicyLamar-Portable.zip`), copy it

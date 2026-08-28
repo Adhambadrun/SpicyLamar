@@ -1,5 +1,5 @@
 // ═════════════════════════════════════════════════════════════════════════════
-// SPICY LAMAR v4.1 // SINGLE-FILE MONOLITHIC SOURCE
+// SPICY LAMAR v4.2 // SINGLE-FILE MONOLITHIC SOURCE
 // TARGET PLATFORM: WINDOWS 10/11 x64 (PORTABLE, STATICALLY LINKED)
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -84,7 +84,7 @@ namespace SL {
     constexpr wchar_t APP_CLASS_NAME[]     = L"SpicyLamar_v4";
     constexpr wchar_t APP_MUTEX_NAME[]     = L"Global\\SpicyLamar_v4_Mutex";
     constexpr wchar_t APP_MUTEX_FALLBACK[] = L"Local\\SpicyLamar_v4_Mutex";
-    constexpr wchar_t APP_VERSION[]        = L"Spicy Lamar v4.1";
+    constexpr wchar_t APP_VERSION[]        = L"Spicy Lamar v4.2";
     constexpr wchar_t TARGET_WINDOW_TITLE[]= L"RingCentral Phone";
     constexpr wchar_t TARGET_CHILD_CLASS[] = L"Chrome_RenderWidgetHostHWND";
 
@@ -114,10 +114,16 @@ namespace SL {
     constexpr DWORD   DEFAULT_POLL_MS      = 20;
     constexpr int     MAX_TELEMETRY_LOGS   = 15;
 
-    // Answer-episode limiter — the answer shortcut (Alt+F1) is NEVER pressed
-    // infinitely: at most ANSWER_MAX_ATTEMPTS cascades per ringing episode,
-    // spaced at least ANSWER_MIN_RETRY_MS apart. A quiet period of
-    // ANSWER_EPISODE_MS re-arms the attempts for the next call.
+    // ── Answer engine rate control ───────────────────────────────────
+    // Default (no define): ALWAYS-ON ATTENTION. While a RingCentral Phone
+    // window exists, Spicy Lamar relentlessly focuses it and fires the
+    // Alt+F1 answer cascade, throttled only by ANSWER_DEBOUNCE_MS. This is
+    // the classic behavior — the app never goes quiet while the target
+    // window is around. Use F11 (pause/start) to silence it manually.
+    // Build with -DSPICY_LAMAR_BOUNDED for bounded mode: at most
+    // ANSWER_MAX_ATTEMPTS cascades per ringing episode, spaced
+    // ANSWER_MIN_RETRY_MS apart, re-armed after ANSWER_EPISODE_MS of quiet.
+    constexpr DWORD   ANSWER_DEBOUNCE_MS   = 500;
     constexpr DWORD   ANSWER_MIN_RETRY_MS  = 1500;
     constexpr int     ANSWER_MAX_ATTEMPTS  = 3;
     constexpr DWORD   ANSWER_EPISODE_MS    = 10000;
@@ -371,12 +377,15 @@ namespace SL {
             }
             if (!m || !IsWindow(m)) return false;
 
-            // ── Answer-episode limiter ─────────────────────────────────────
-            // Buttons must NOT be clicked as infinite: bound the number of
-            // cascades per ringing episode and space them out. Only the
-            // benchmark may bypass the limiter.
+            // ── Rate control ──────────────────────────────────────────────
+            // ALWAYS-ON ATTENTION (default): keep focusing + answering the
+            // target window for as long as it exists — never goes quiet —
+            // throttled only by the debounce. SPICY_LAMAR_BOUNDED instead
+            // bounds the cascades per ringing episode (buttons not clicked
+            // as infinite).
             if (!force) {
                 ULONGLONG now = GetTickCount64();
+#ifdef SPICY_LAMAR_BOUNDED
                 if (last_attempt_tick.load() == 0 ||
                     (now - last_attempt_tick.load()) > ANSWER_EPISODE_MS) {
                     attempts.store(0);        // new episode: re-arm attempts
@@ -394,6 +403,12 @@ namespace SL {
                     return false;             // too soon after previous attempt
                 }
                 attempts.store(attempts.load() + 1);
+#else
+                if (last_attempt_tick.load() != 0 &&
+                    (now - last_attempt_tick.load()) < ANSWER_DEBOUNCE_MS) {
+                    return false;             // relentless, but throttled
+                }
+#endif
                 last_attempt_tick.store(now);
             }
 
@@ -668,10 +683,13 @@ namespace SL {
                 if (wp == 1) {
                     if (self.visible) InvalidateRect(w, nullptr, FALSE);
                 } else if (wp == 2) {
-                    // Cache-refresh poll only. The answer cascade fires strictly
-                    // from ringing/activation events — never from the raw poll —
-                    // so an idle RingCentral window is never re-answered forever.
-                    WindowCache::Instance().FindRingCentral();
+                    // ALWAYS-ON ATTENTION poll: hunt for the RingCentral
+                    // Phone window and attend to it — focus + Alt+F1 answer
+                    // cascade (throttled by the engine's debounce). The
+                    // window-event hooks (below) only make it respond
+                    // faster; they are NOT required for it to work.
+                    HWND found = WindowCache::Instance().FindRingCentral();
+                    if (found) Engine::Instance().TryAnswer(found, 2);
                 }
                 return 0;
             }
@@ -775,7 +793,7 @@ namespace SL {
 
             // Title Banner
             SetTextColor(mdc, CLR_CHILI_RED);
-            const wchar_t* titleText = L"🌶️ SPICY LAMAR v4.1";
+            const wchar_t* titleText = L"🌶️ SPICY LAMAR v4.2";
             TextOutW(mdc, 20, 20, titleText, (int)wcslen(titleText));
 
             // Status Badge with F11 hint
@@ -840,7 +858,11 @@ namespace SL {
             LineTo(mdc, DASH_WIDTH - 20, 452);
             SetTextColor(mdc, CLR_TEXT_DIM);
             const wchar_t* footerText =
+#ifdef SPICY_LAMAR_BOUNDED
                 L"F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ANSWER (MAX 3/CALL)";
+#else
+                L"F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ALWAYS-ON ATTENTION";
+#endif
             TextOutW(mdc, 20, 462, footerText, (int)wcslen(footerText));
 
             // Blit buffer to screen
@@ -907,9 +929,13 @@ static int RunApp(HINSTANCE h) {
     if (!RegisterHotKey(w, SL::HK_EMERGENCY_EXIT, MOD_NOREPEAT, VK_F12))
         LOG_WRN(L"F12 hotkey registration failed (already taken by another app?)");
 
-    LOG_INF(L"Spicy Lamar v4.1 online. Hotkeys: F9 dashboard, F11 pause/start, F12 exit.");
-    LOG_INF(L"Auto-answer armed: Alt+F1 cascade fires on call events (max %d per call).",
+    LOG_INF(L"Spicy Lamar v4.2 online. Hotkeys: F9 dashboard, F11 pause/start, F12 exit.");
+#ifdef SPICY_LAMAR_BOUNDED
+    LOG_INF(L"Auto-answer armed (bounded): Alt+F1 cascade fires on call events (max %d per call).",
             SL::ANSWER_MAX_ATTEMPTS);
+#else
+    LOG_INF(L"Auto-answer armed: ALWAYS-ON attention on the RingCentral Phone window.");
+#endif
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0)) {
