@@ -3,13 +3,13 @@
 // Icon
 1 ICON "icon.ico"
 
-// Manifest
-1 RT_MANIFEST "app.manifest"
+// Manifest (24 = RT_MANIFEST, numeric form understood by every rc compiler)
+1 24 "app.manifest"
 
 // Version Info
 1 VERSIONINFO
-FILEVERSION     4,0,0,0
-PRODUCTVERSION  4,0,0,0
+FILEVERSION     4,1,0,0
+PRODUCTVERSION  4,1,0,0
 FILEFLAGSMASK   0x3FL
 FILEFLAGS       0x0L
 FILEOS          VOS_NT_WINDOWS32
@@ -21,13 +21,13 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "CompanyName",      "SpicyLamar"
-            VALUE "FileDescription",  "Spicy Lamar RingCentral Auto-Answer"
-            VALUE "FileVersion",      "4.0.0.0"
-            VALUE "InternalName",     "SpicyLamarAutoAnswer"
+            VALUE "FileDescription",  "Spicy Lamar"
+            VALUE "FileVersion",      "4.1.0.0"
+            VALUE "InternalName",     "SpicyLamar"
             VALUE "LegalCopyright",   "\xA9 SpicyLamar"
-            VALUE "OriginalFilename", "SpicyLamar RingCentral Auto-Answer.exe"
-            VALUE "ProductName",      "Spicy Lamar Auto-Answer"
-            VALUE "ProductVersion",   "4.0.0.0"
+            VALUE "OriginalFilename", "SpicyLamar.exe"
+            VALUE "ProductName",      "Spicy Lamar"
+            VALUE "ProductVersion",   "4.1.0.0"
         END
     END
     BLOCK "VarFileInfo"

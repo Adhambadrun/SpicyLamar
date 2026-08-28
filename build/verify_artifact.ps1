@@ -5,7 +5,7 @@
 # =============================================================================
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$exe = Join-Path $repoRoot 'dist\SpicyLamar RingCentral Auto-Answer.exe'
+$exe = Join-Path $repoRoot 'dist\SpicyLamar.exe'
 
 Write-Host "== SpicyLamar artifact verification =="
 

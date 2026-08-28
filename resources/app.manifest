@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity
-      version="4.0.0.0"
+      version="4.1.0.0"
       processorArchitecture="*"
-      name="SpicyLamar.AutoAnswer"
+      name="SpicyLamar"
       type="win32" />
 
-  <description>Spicy Lamar RingCentral Auto-Answer</description>
+  <description>Spicy Lamar</description>
 
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>

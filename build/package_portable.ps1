@@ -1,14 +1,14 @@
 # =============================================================================
 #  SPICY LAMAR — package_portable.ps1
 #  Packages the built single-file portable executable into a zip:
-#      dist\SpicyLamar RingCentral Auto-Answer.exe
+#      dist\SpicyLamar.exe
 #      dist\README.txt  -> packaged as README.txt
 #  Output: dist\SpicyLamar-Portable.zip
 # =============================================================================
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$exe      = Join-Path $repoRoot 'dist\SpicyLamar RingCentral Auto-Answer.exe'
+$exe      = Join-Path $repoRoot 'dist\SpicyLamar.exe'
 $readme   = Join-Path $repoRoot 'dist\README.txt'
 $zipPath  = Join-Path $repoRoot 'dist\SpicyLamar-Portable.zip'
 

@@ -9,7 +9,7 @@ pushd "%~dp0.." >nul
 cd /d "%~dp0.."
 
 echo ==========================================================
-echo  SPICY LAMAR v4.0 - C++ PORTABLE BUILD
+echo  SPICY LAMAR v4.1 - C++ PORTABLE BUILD
 echo ==========================================================
 
 :: ---------------------------------------------------------------------------
@@ -76,12 +76,12 @@ if errorlevel 1 (
 :: ---------------------------------------------------------------------------
 :: 5. Link the portable single-file executable
 :: ---------------------------------------------------------------------------
-echo [3/3] Linking "SpicyLamar RingCentral Auto-Answer.exe"...
+echo [3/3] Linking "SpicyLamar.exe"...
 link.exe /nologo /LTCG /OPT:REF /OPT:ICF /SUBSYSTEM:WINDOWS,10.0 /MACHINE:X64 ^
     "build\obj\main.obj" "build\obj\app.res" ^
     comctl32.lib shell32.lib ole32.lib oleaut32.lib advapi32.lib uxtheme.lib ^
     winmm.lib avrt.lib dwmapi.lib uiautomationcore.lib oleacc.lib tdh.lib psapi.lib ^
-    /OUT:"dist\SpicyLamar RingCentral Auto-Answer.exe"
+    /OUT:"dist\SpicyLamar.exe"
 if errorlevel 1 (
     echo [ERROR] link.exe failed.
     pause
@@ -90,7 +90,7 @@ if errorlevel 1 (
 
 echo.
 echo ==========================================================
-echo  SUCCESS - dist\SpicyLamar RingCentral Auto-Answer.exe ready.
+echo  SUCCESS - dist\SpicyLamar.exe ready.
 echo ==========================================================
 pause
 exit /b 0
