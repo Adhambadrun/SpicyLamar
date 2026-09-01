@@ -16,6 +16,23 @@ namespace SpicyLamar
         [DllImport("winmm.dll")]
         static extern uint timeEndPeriod(uint uMilliseconds);
 
+        [DllImport("ntdll.dll", SetLastError = true)]
+        static extern int NtSetTimerResolution(uint DesiredResolution, bool SetResolution, out uint CurrentResolution);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool SetProcessWorkingSetSize(IntPtr hProcess, IntPtr dwMinimumWorkingSetSize, IntPtr dwMaximumWorkingSetSize);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool SystemParametersInfo(uint uiAction, uint uiParam, IntPtr pvParam, uint fWinIni);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool AllowSetForegroundWindow(uint dwProcessId);
+
+        private const uint SPI_SETFOREGROUNDLOCKTIMEOUT = 0x2001;
+        private const uint SPIF_SENDCHANGE = 0x0002;
+        private const uint SPIF_UPDATEINIFILE = 0x0001;
+        private const uint ASFW_ANY = 0xFFFFFFFF;
+
         [STAThread]
         static void Main()
         {
@@ -23,12 +40,29 @@ namespace SpicyLamar
             Application.SetCompatibleTextRenderingDefault(false);
 
             // Max-performance profile: real-time process priority (fall back to
-            // high if the OS denies it) and a 1 ms multimedia timer tick.
+            // high if the OS denies it) and a 1 ms multimedia timer tick + 0.5 ms NT kernel timer.
             if (AnswerEngine.TURBO_MODE)
             {
                 try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.RealTime; }
                 catch { try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High; } catch { } }
+                try { Thread.CurrentThread.Priority = ThreadPriority.Highest; } catch { }
                 timeBeginPeriod(1);
+                try
+                {
+                    uint cur;
+                    NtSetTimerResolution(5000, true, out cur); // 5000 * 100ns = 0.5ms NT kernel timer resolution
+                }
+                catch { }
+
+                try
+                {
+                    // Lock working set into RAM (prevent page faults during answering)
+                    SetProcessWorkingSetSize(Process.GetCurrentProcess().Handle, (IntPtr)(32 * 1024 * 1024), (IntPtr)(128 * 1024 * 1024));
+                    // Bypass foreground lock delay
+                    SystemParametersInfo(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, IntPtr.Zero, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
+                    AllowSetForegroundWindow(ASFW_ANY);
+                }
+                catch { }
             }
 
             // Single-instance enforcement. A Global\ mutex needs SeCreateGlobalPrivilege,
@@ -170,6 +204,16 @@ namespace SpicyLamar
         private Pen linePen;
         private Font monoFont;
         private Font headerFont;
+        private uint wmShellHook = 0;
+
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        static extern uint RegisterWindowMessage(string lpString);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool RegisterShellHookWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool DeregisterShellHookWindow(IntPtr hWnd);
 
         public TerminalForm(AnswerEngine engine)
         {
@@ -197,6 +241,13 @@ namespace SpicyLamar
             refreshTimer.Interval = AnswerEngine.TURBO_MODE ? 100 : 250;
             refreshTimer.Tick += delegate(object s, EventArgs e) { if (this.Visible) this.Invalidate(); };
             refreshTimer.Start();
+
+            try
+            {
+                wmShellHook = RegisterWindowMessage("SHELLHOOK");
+                RegisterShellHookWindow(this.Handle);
+            }
+            catch { }
         }
 
         public void ToggleVisibility()
@@ -220,6 +271,19 @@ namespace SpicyLamar
                 if (id == 1) ToggleVisibility();
                 if (id == 2) engine.Toggle();
                 if (id == 3) Application.Exit();
+            }
+            else if (wmShellHook != 0 && m.Msg == wmShellHook)
+            {
+                int wp = m.WParam.ToInt32();
+                // HSHELL_WINDOWCREATED (1), HSHELL_WINDOWACTIVATED (4), HSHELL_RUDEAPPACTIVATED (0x8004), HSHELL_FLASH (0x8006), HSHELL_REDRAW (6), HSHELL_ACTIVATESHELLWINDOW (3)
+                if (wp == 1 || wp == 4 || wp == 0x8004 || wp == 0x8006 || wp == 6 || wp == 3)
+                {
+                    IntPtr hwnd = m.LParam;
+                    if (hwnd != IntPtr.Zero)
+                    {
+                        engine.OnShellHookEvent(hwnd);
+                    }
+                }
             }
             base.WndProc(ref m);
         }
@@ -294,6 +358,11 @@ namespace SpicyLamar
                 if (linePen != null) { linePen.Dispose(); linePen = null; }
                 if (headerFont != null) { headerFont.Dispose(); headerFont = null; }
                 if (monoFont != null) { monoFont.Dispose(); monoFont = null; }
+                try
+                {
+                    if (wmShellHook != 0) DeregisterShellHookWindow(this.Handle);
+                }
+                catch { }
             }
             base.Dispose(disposing);
         }
@@ -355,31 +424,12 @@ namespace SpicyLamar
         private System.Threading.Timer pollTimer;
         private long lastFireTick = 0;
 
-        // ── Answer engine rate control ──────────────────────────────────────
-        // BOUNDED_MODE=false (default): ALWAYS-ON ATTENTION — while a
-        // RingCentral Phone window exists, Spicy Lamar relentlessly focuses
-        // it and fires the Alt+F1 cascade. Real call events (WinEvent hook)
-        // bypass the debounce and fire instantly; only the idle-window
-        // attention poll is rate-limited by DEBOUNCE_TICKS.
-        // The app never goes quiet; use F11 (pause/start) to silence it.
-        // BOUNDED_MODE=true: at most MAX_ATTEMPTS_PER_EPISODE cascades per
-        // ringing episode, spaced MIN_RETRY_TICKS apart, re-armed after
-        // EPISODE_RESET_TICKS of quiet (buttons not clicked as infinite).
         public const bool BOUNDED_MODE = false;
-        // Max-performance profile (default for a PC dedicated to this job).
-        // Fan out to the classic 20 ms scan / 0.5 s heart-beat by setting
-        // this to false and rebuilding.
         public const bool TURBO_MODE = true;
-        // 1 ms cascade floor: up to 1000 cascades/sec while the window exists.
-        // This is the most aggressive possible setting — if RingCentral or the
-        // PC misbehaves, bump the 1 back to 50 for a slightly gentler profile.
         private const long DEBOUNCE_TICKS         = TURBO_MODE ? (1 * 10000)     : (500 * 10000);   // 1 ms / 500 ms in 100-ns ticks
         private const long MIN_RETRY_TICKS        = TURBO_MODE ? (100 * 10000)   : (1500 * 10000);  // 100 ms / 1500 ms in 100-ns ticks
         private const long EPISODE_RESET_TICKS    = TURBO_MODE ? (2000 * 10000)  : (10000 * 10000); // 2000 ms / 10000 ms in 100-ns ticks
         private const int  MAX_ATTEMPTS_PER_EPISODE = 3;
-        // Per-cascade log floor: at 1000 Hz, formatting/allocating a log line
-        // per cascade would dominate the loop. Stats are still fully recorded
-        // for every cascade; only log lines are coalesced ("+N more").
         private const long ANSWER_LOG_MIN_GAP_TICKS = TURBO_MODE ? (250 * 10000) : 0; // 250 ms / log everything
         private long lastAnswerLogTick = 0;
         private long suppressedAnswerLogs = 0;
@@ -389,27 +439,38 @@ namespace SpicyLamar
 
         private readonly object logLock = new object();
         private readonly object statsLock = new object();
-        // Plain field: IntPtr cannot be declared volatile (CS0677); pointer-sized
-        // reads/writes are atomic on x86/x64.
         private IntPtr cachedTarget = IntPtr.Zero;
+        private IntPtr cachedChild = IntPtr.Zero;
+        private IntPtr cachedIntermediate = IntPtr.Zero;
 
         // Virtual key codes and keybd_event flags
         private const byte VK_MENU = 0x12;
         private const byte VK_RETURN = 0x0D;
+        private const byte VK_SPACE = 0x20;
         private const byte VK_CONTROL = 0x11;
+        private const byte VK_SHIFT = 0x10;
         private const byte VK_F1 = 0x70;
         private const byte SCAN_MENU = 0x38;
         private const byte SCAN_F1 = 0x3B;
+        private const byte SCAN_RETURN = 0x1C;
+        private const byte SCAN_SPACE = 0x39;
         private const uint KEYEVENTF_KEYUP = 0x0002;
+        private const uint KEYEVENTF_SCANCODE = 0x0008;
         private const uint WM_SYSKEYDOWN = 0x0104;
         private const uint WM_SYSKEYUP = 0x0105;
+        private const uint WM_SYSCHAR = 0x0106;
         private const uint WM_KEYDOWN = 0x0100;
         private const uint WM_KEYUP = 0x0101;
         private const uint WM_COMMAND = 0x0111;
         private const uint SW_RESTORE = 0x0001;
         private const uint SW_SHOW = 0x0004;
 
-        // INPUT struct for SendInput (hardware-level key synthesis)
+        [DllImport("avrt.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        static extern IntPtr AvSetMmThreadCharacteristics(string TaskName, ref uint TaskIndex);
+
+        [DllImport("avrt.dll", SetLastError = true)]
+        static extern bool AvRevertMmThreadCharacteristics(IntPtr AvrtHandle);
+
         [StructLayout(LayoutKind.Sequential)]
         struct INPUT
         {
@@ -438,33 +499,25 @@ namespace SpicyLamar
         public AnswerEngine()
         {
             dele = new WinEventDelegate(WinEventProc);
-            // Listen for window foreground, create, show, and title changes
-            // dwFlags: WINEVENT_OUTOFCONTEXT (0) | WINEVENT_SKIPOWNPROCESS (2)
+            // Listen for window foreground, create, show, state, cloak/uncloak, and title changes
+            // Range: EVENT_SYSTEM_SOUND (0x0001) to EVENT_OBJECT_UNCLOAKED (0x8018)
             const uint WINEVENT_OUTOFCONTEXT = 0;
             const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
-            hookHandle = SetWinEventHook(0x0003, 0x800C, IntPtr.Zero, dele, 0, 0,
+            hookHandle = SetWinEventHook(0x0001, 0x8018, IntPtr.Zero, dele, 0, 0,
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
             Log("Spicy Lamar v4.2 online. Hotkeys: F9 dashboard, F11 pause/start, F12 exit.");
-            Log("Engine initialized. Call-event sensors active.");
+            Log("Engine initialized. Quantum call-event sensors active.");
 
-            // Cache-refresh poll: 1 ms in the max-performance profile
-            // (20 ms in the classic profile). NEVER fires the cascade itself —
-            // an idle window must not be re-answered forever.
+            // Cache-refresh poll: 1 ms in max-performance profile
             pollTimer = new System.Threading.Timer(PollCheck, null, TURBO_MODE ? 1 : 100, TURBO_MODE ? 1 : 20);
         }
 
         private void PollCheck(object state)
         {
-            // ALWAYS-ON ATTENTION poll: hunt for the RingCentral Phone window
-            // and attend to it — focus + Alt+F1 answer cascade (throttled by
-            // the engine's debounce). The window-event hook only makes it
-            // respond faster; it is NOT required for it to work.
             IntPtr found = FindRingCentralWindow();
-            cachedTarget = found;
-            if (found != IntPtr.Zero) TryFire(found);
+            if (found != IntPtr.Zero) TryFire(found, false);
         }
 
-        // Same title match set as the C++ version.
         private static bool IsTargetTitle(string title)
         {
             return title.IndexOf("RingCentral", StringComparison.OrdinalIgnoreCase) >= 0
@@ -475,15 +528,40 @@ namespace SpicyLamar
 
         private IntPtr FindRingCentralWindow()
         {
-            // Fast path: reuse a still-valid cached target so the 1 ms scan
-            // doesn't walk every top-level window on every tick. The WinEvent
-            // hook catches new windows and refreshes the cache when the cached
-            // window disappears.
+            // Fast path 1: Cached target window
             if (cachedTarget != IntPtr.Zero && IsWindow(cachedTarget))
             {
+                if (cachedChild == IntPtr.Zero || !IsWindow(cachedChild))
+                {
+                    FindChildWindows(cachedTarget);
+                }
                 return cachedTarget;
             }
 
+            // Fast path 2: Direct O(1) FindWindow for standard title
+            IntPtr direct = FindWindow(null, "RingCentral Phone");
+            if (direct != IntPtr.Zero && IsWindow(direct))
+            {
+                cachedTarget = direct;
+                FindChildWindows(direct);
+                return direct;
+            }
+
+            // Fast path 3: Direct FindWindow for Electron widget class
+            direct = FindWindow("Chrome_WidgetWin_1", null);
+            if (direct != IntPtr.Zero && IsWindow(direct))
+            {
+                System.Text.StringBuilder sbTitle = new System.Text.StringBuilder(256);
+                GetWindowText(direct, sbTitle, 256);
+                if (IsTargetTitle(sbTitle.ToString()))
+                {
+                    cachedTarget = direct;
+                    FindChildWindows(direct);
+                    return direct;
+                }
+            }
+
+            // Fast path 4: Filtered EnumWindows
             IntPtr found = IntPtr.Zero;
             EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
             {
@@ -497,17 +575,53 @@ namespace SpicyLamar
                 }
                 return true;
             }, IntPtr.Zero);
+
+            if (found != IntPtr.Zero)
+            {
+                cachedTarget = found;
+                FindChildWindows(found);
+            }
             return found;
         }
 
-        // Only these events indicate fresh call activity (ringing / call window
-        // shown / activation). Firing on every window event would machine-gun
-        // the answer shortcut at an idle window — which must never happen.
+        private void FindChildWindows(IntPtr mainWnd)
+        {
+            if (mainWnd == IntPtr.Zero || !IsWindow(mainWnd)) return;
+            IntPtr c = FindWindowEx(mainWnd, IntPtr.Zero, "Chrome_RenderWidgetHostHWND", null);
+            IntPtr inter = FindWindowEx(mainWnd, IntPtr.Zero, "Intermediate D3D Window", null);
+            if (c == IntPtr.Zero && inter != IntPtr.Zero)
+            {
+                c = FindWindowEx(inter, IntPtr.Zero, "Chrome_RenderWidgetHostHWND", null);
+            }
+            cachedChild = c;
+            cachedIntermediate = inter;
+        }
+
         private static bool IsAnswerTriggerEvent(uint eventType)
         {
-            return eventType == 0x0003   // EVENT_SYSTEM_FOREGROUND
-                || eventType == 0x8002   // EVENT_OBJECT_SHOW (call popup)
-                || eventType == 0x800C;  // EVENT_OBJECT_NAMECHANGE (call state)
+            return eventType == 0x0002   // EVENT_SYSTEM_ALERT
+                || eventType == 0x0003   // EVENT_SYSTEM_FOREGROUND
+                || eventType == 0x8000   // EVENT_OBJECT_CREATE
+                || eventType == 0x8002   // EVENT_OBJECT_SHOW
+                || eventType == 0x8005   // EVENT_OBJECT_FOCUS
+                || eventType == 0x800A   // EVENT_OBJECT_STATECHANGE
+                || eventType == 0x800C   // EVENT_OBJECT_NAMECHANGE
+                || eventType == 0x8018;  // EVENT_OBJECT_UNCLOAKED
+        }
+
+        public void OnShellHookEvent(IntPtr hwnd)
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder(256);
+            GetWindowText(hwnd, sb, 256);
+            if (IsTargetTitle(sb.ToString()))
+            {
+                TryFire(hwnd, true);
+            }
+            else
+            {
+                IntPtr target = FindRingCentralWindow();
+                if (target != IntPtr.Zero) TryFire(target, true);
+            }
         }
 
         private void WinEventProc(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
@@ -522,7 +636,7 @@ namespace SpicyLamar
             GetWindowText(root, sb, 256);
             if (IsTargetTitle(sb.ToString()))
             {
-                // Real call event: bypass the polling debounce, fire instantly.
+                // Real call event: bypass polling debounce, fire instantly in microseconds.
                 TryFire(root, true);
             }
         }
@@ -532,39 +646,24 @@ namespace SpicyLamar
             TryFire(target, false);
         }
 
-        // immediate=true (real RingCentral call events from the WinEvent hook)
-        // bypasses the polling debounce and fires the cascade instantly;
-        // immediate=false (the attention poll) is rate-limited by
-        // DEBOUNCE_TICKS so an idle window doesn't fully saturate the engine.
         public void TryFire(IntPtr target, bool immediate)
         {
-            // One cascade at a time: the 1 ms poll timer and the WinEvent hook
-            // can race on different threads.
             if (!Monitor.TryEnter(fireLock, 0)) return;
             try
             {
-            if (!Active) return;
+                if (!Active) return;
 
-            // Fall back to the cached target window (parity with the C++ version)
-            if (target == IntPtr.Zero) target = cachedTarget;
-            if (target == IntPtr.Zero || !IsWindow(target)) return;
+                if (target == IntPtr.Zero) target = cachedTarget;
+                if (target == IntPtr.Zero || !IsWindow(target)) target = FindRingCentralWindow();
+                if (target == IntPtr.Zero || !IsWindow(target)) return;
 
-            // ── Rate control ─────────────────────────────────────────────────
-            // ALWAYS-ON ATTENTION (default): keep focusing + answering the
-            // target window for as long as it exists — never goes quiet.
-            // Real call events (immediate=true) bypass the debounce and fire
-            // instantly; only the attention poll is throttled by
-            // DEBOUNCE_TICKS. BOUNDED_MODE instead bounds the cascades per
-            // ringing episode.
-            long now = DateTime.UtcNow.Ticks;
-            lock (fireLock)
-            {
+                long now = DateTime.UtcNow.Ticks;
                 long last = Interlocked.Read(ref lastFireTick);
                 if (BOUNDED_MODE)
                 {
                     if (last == 0 || (now - last) > EPISODE_RESET_TICKS)
                     {
-                        episodeAttempts = 0;   // new episode: re-arm
+                        episodeAttempts = 0;
                         capLogged = false;
                     }
                     if (episodeAttempts >= MAX_ATTEMPTS_PER_EPISODE)
@@ -580,133 +679,160 @@ namespace SpicyLamar
                     }
                     if (last != 0 && (now - last) < MIN_RETRY_TICKS)
                     {
-                        return; // too soon after previous attempt
+                        return;
                     }
                     episodeAttempts++;
                 }
                 else
                 {
-                    // Immediate call response: only the poll path is debounced.
                     if (!immediate && last != 0 && (now - last) < DEBOUNCE_TICKS)
                     {
-                        return; // relentless, but throttled
+                        return;
                     }
                 }
                 Interlocked.Exchange(ref lastFireTick, now);
-            }
 
-            Stopwatch sw = Stopwatch.StartNew();
+                Stopwatch sw = Stopwatch.StartNew();
 
-            IntPtr child = FindWindowEx(target, IntPtr.Zero, "Chrome_RenderWidgetHostHWND", null);
-            if (child == IntPtr.Zero)
-            {
-                IntPtr intermediate = FindWindowEx(target, IntPtr.Zero, "Intermediate D3D Window", null);
-                if (intermediate != IntPtr.Zero)
-                    child = FindWindowEx(intermediate, IntPtr.Zero, "Chrome_RenderWidgetHostHWND", null);
-            }
-
-            // ── Window activation FIRST — before any key messages ─────────────
-            // PostMessage/PostMessage only reach a window that already has
-            // foreground focus. The C++ version activates the window first
-            // (restore + bring to top + foreground + child focus), then fires
-            // the cascade. Match that ordering here so keys actually land.
-            if (IsIconic(target)) ShowWindow(target, SW_RESTORE);
-            BringWindowToTop(target);
-            try { SetForegroundWindow(target); } catch { }
-            if (child != IntPtr.Zero && IsWindow(child)) try { SetFocus(child); } catch { }
-
-            // Shot 1: Target window Alt+F1 Down/Up
-            PostMessage(target, WM_SYSKEYDOWN, (IntPtr)VK_MENU, (IntPtr)0x20380001);
-            PostMessage(target, WM_SYSKEYDOWN, (IntPtr)VK_F1,   (IntPtr)0x203B0001);
-            PostMessage(target, WM_SYSKEYUP,   (IntPtr)VK_F1,   (IntPtr)0xE03B0001);
-            PostMessage(target, WM_KEYUP,      (IntPtr)VK_MENU, (IntPtr)0xE0380001);
-
-            // Shot 2: Chrome Render Child Alt+F1 Down/Up
-            if (child != IntPtr.Zero)
-            {
-                PostMessage(child, WM_SYSKEYDOWN, (IntPtr)VK_MENU, (IntPtr)0x20380001);
-                PostMessage(child, WM_SYSKEYDOWN, (IntPtr)VK_F1,   (IntPtr)0x203B0001);
-                PostMessage(child, WM_SYSKEYUP,   (IntPtr)VK_F1,   (IntPtr)0xE03B0001);
-                PostMessage(child, WM_KEYUP,      (IntPtr)VK_MENU, (IntPtr)0xE0380001);
-            }
-
-            // Shot 3: Post Enter to root
-            PostMessage(target, WM_KEYDOWN, (IntPtr)VK_RETURN, (IntPtr)0x001C0001);
-            PostMessage(target, WM_KEYUP,   (IntPtr)VK_RETURN, (IntPtr)0xC01C0001);
-
-            // Shot 4: hardware-level keyboard input via SendInput (most reliable)
-            INPUT[] inputs = new INPUT[4];
-            inputs[0] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_MENU } } };
-            inputs[1] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_F1 } } };
-            inputs[2] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_F1, dwFlags = KEYEVENTF_KEYUP } } };
-            inputs[3] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_MENU, dwFlags = KEYEVENTF_KEYUP } } };
-            SendInput(4, inputs, Marshal.SizeOf(typeof(INPUT)));
-
-            // keybd_event legacy fallback (matches C++ Shot 4)
-            keybd_event(VK_MENU, SCAN_MENU, 0, UIntPtr.Zero);
-            keybd_event(VK_F1,   SCAN_F1,   0, UIntPtr.Zero);
-            keybd_event(VK_F1,   SCAN_F1,   KEYEVENTF_KEYUP, UIntPtr.Zero);
-            keybd_event(VK_MENU, SCAN_MENU, KEYEVENTF_KEYUP, UIntPtr.Zero);
-
-            // Shot 5: Direct WM_COMMAND
-            PostMessage(target, WM_COMMAND, (IntPtr)1001, IntPtr.Zero);
-
-            // Shot 6: Foreground focus activation (re-assert after the cascade)
-            try { SetForegroundWindow(target); } catch { }
-
-            // Shot 7: Modifier key release safety net
-            keybd_event(VK_MENU,    SCAN_MENU, KEYEVENTF_KEYUP, UIntPtr.Zero);
-            keybd_event(VK_CONTROL, 0x1D,      KEYEVENTF_KEYUP, UIntPtr.Zero);
-
-            sw.Stop();
-            long lat = sw.ElapsedTicks * 1000000 / Stopwatch.Frequency;
-            Interlocked.Exchange(ref lastLatency, lat);
-            lock (statsLock)
-            {
-                Interlocked.Increment(ref callCount);
-                Interlocked.Add(ref sumLatency, lat);
-                long curBest = Interlocked.Read(ref bestLatency);
-                while (lat < curBest && Interlocked.CompareExchange(ref bestLatency, lat, curBest) != curBest)
+                IntPtr child = cachedChild;
+                IntPtr inter = cachedIntermediate;
+                if (child == IntPtr.Zero || !IsWindow(child))
                 {
-                    curBest = Interlocked.Read(ref bestLatency);
+                    FindChildWindows(target);
+                    child = cachedChild;
+                    inter = cachedIntermediate;
                 }
-                long curWorst = Interlocked.Read(ref worstLatency);
-                while (lat > curWorst && Interlocked.CompareExchange(ref worstLatency, lat, curWorst) != curWorst)
+
+                // Attach thread input for unconditional foreground focus steal
+                uint curThreadId = GetCurrentThreadId();
+                uint targetThreadId = GetWindowThreadProcessId(target, IntPtr.Zero);
+                bool attached = false;
+                if (targetThreadId != 0 && targetThreadId != curThreadId)
                 {
-                    curWorst = Interlocked.Read(ref worstLatency);
+                    attached = AttachThreadInput(curThreadId, targetThreadId, true);
                 }
-                if (lat < 20) histogram[0]++;
-                else if (lat < 40) histogram[1]++;
-                else if (lat < 60) histogram[2]++;
-                else if (lat < 100) histogram[3]++;
-                else histogram[4]++;
-            }
-            // Per-cascade logging is rate-limited (ANSWER_LOG_MIN_GAP_TICKS)
-            // so 1000 Hz bursts spend their time answering instead of
-            // formatting/allocating log lines. Stats above are ALWAYS fully
-            // recorded; skipped lines are coalesced into a "+N more" suffix.
-            if (ANSWER_LOG_MIN_GAP_TICKS == 0)
-            {
-                Log(string.Format("ANSWERED via 7-Shot Cascade in {0} us", lat));
-            }
-            else
-            {
-                long lnow = DateTime.UtcNow.Ticks;
-                if (lastAnswerLogTick == 0 || (lnow - lastAnswerLogTick) >= ANSWER_LOG_MIN_GAP_TICKS)
+
+                if (IsIconic(target)) ShowWindow(target, SW_RESTORE);
+                BringWindowToTop(target);
+                try { SetForegroundWindow(target); } catch { }
+                if (child != IntPtr.Zero && IsWindow(child)) try { SetFocus(child); } catch { }
+                else try { SetFocus(target); } catch { }
+
+                // ─────────────────────────────────────────────────────────────────
+                // 7-SHOT REDUNDANT QUANTUM IPC CASCADE
+                // ─────────────────────────────────────────────────────────────────
+
+                // Shot 1: Target window Alt+F1 Down/Up
+                PostMessage(target, WM_SYSKEYDOWN, (IntPtr)VK_MENU, (IntPtr)0x20380001);
+                PostMessage(target, WM_SYSKEYDOWN, (IntPtr)VK_F1,   (IntPtr)0x203B0001);
+                PostMessage(target, WM_SYSKEYUP,   (IntPtr)VK_F1,   (IntPtr)0xE03B0001);
+                PostMessage(target, WM_KEYUP,      (IntPtr)VK_MENU, (IntPtr)0xE0380001);
+
+                // Shot 2: Chrome Render Child + Intermediate D3D Alt+F1 Down/Up
+                if (child != IntPtr.Zero && IsWindow(child))
                 {
-                    lastAnswerLogTick = lnow;
-                    long skipped = suppressedAnswerLogs;
-                    suppressedAnswerLogs = 0;
-                    if (skipped > 0)
-                        Log(string.Format("ANSWERED via 7-Shot Cascade in {0} us (+{1} more cascades since last log)", lat, skipped));
-                    else
-                        Log(string.Format("ANSWERED via 7-Shot Cascade in {0} us", lat));
+                    PostMessage(child, WM_SYSKEYDOWN, (IntPtr)VK_MENU, (IntPtr)0x20380001);
+                    PostMessage(child, WM_SYSKEYDOWN, (IntPtr)VK_F1,   (IntPtr)0x203B0001);
+                    PostMessage(child, WM_SYSKEYUP,   (IntPtr)VK_F1,   (IntPtr)0xE03B0001);
+                    PostMessage(child, WM_KEYUP,      (IntPtr)VK_MENU, (IntPtr)0xE0380001);
+                }
+                if (inter != IntPtr.Zero && IsWindow(inter))
+                {
+                    PostMessage(inter, WM_SYSKEYDOWN, (IntPtr)VK_MENU, (IntPtr)0x20380001);
+                    PostMessage(inter, WM_SYSKEYDOWN, (IntPtr)VK_F1,   (IntPtr)0x203B0001);
+                    PostMessage(inter, WM_SYSKEYUP,   (IntPtr)VK_F1,   (IntPtr)0xE03B0001);
+                    PostMessage(inter, WM_KEYUP,      (IntPtr)VK_MENU, (IntPtr)0xE0380001);
+                }
+
+                // Shot 3: Post Enter & Space keys to root and child
+                PostMessage(target, WM_KEYDOWN, (IntPtr)VK_RETURN, (IntPtr)0x001C0001);
+                PostMessage(target, WM_KEYUP,   (IntPtr)VK_RETURN, (IntPtr)0xC01C0001);
+                PostMessage(target, WM_KEYDOWN, (IntPtr)VK_SPACE,  (IntPtr)0x00390001);
+                PostMessage(target, WM_KEYUP,   (IntPtr)VK_SPACE,  (IntPtr)0xC0390001);
+                if (child != IntPtr.Zero && IsWindow(child))
+                {
+                    PostMessage(child, WM_KEYDOWN, (IntPtr)VK_RETURN, (IntPtr)0x001C0001);
+                    PostMessage(child, WM_KEYUP,   (IntPtr)VK_RETURN, (IntPtr)0xC01C0001);
+                }
+
+                // Shot 4: Direct hardware-level SendInput synthesis with scan codes + legacy fallback
+                INPUT[] inputs = new INPUT[4];
+                inputs[0] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_MENU, wScan = SCAN_MENU } } };
+                inputs[1] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_F1,   wScan = SCAN_F1 } } };
+                inputs[2] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_F1,   wScan = SCAN_F1,   dwFlags = KEYEVENTF_KEYUP } } };
+                inputs[3] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_MENU, wScan = SCAN_MENU, dwFlags = KEYEVENTF_KEYUP } } };
+                SendInput(4, inputs, Marshal.SizeOf(typeof(INPUT)));
+
+                keybd_event(VK_MENU, SCAN_MENU, 0, UIntPtr.Zero);
+                keybd_event(VK_F1,   SCAN_F1,   0, UIntPtr.Zero);
+                keybd_event(VK_F1,   SCAN_F1,   KEYEVENTF_KEYUP, UIntPtr.Zero);
+                keybd_event(VK_MENU, SCAN_MENU, KEYEVENTF_KEYUP, UIntPtr.Zero);
+
+                // Shot 5: Direct RingCentral Command messages
+                PostMessage(target, WM_COMMAND, (IntPtr)1001, IntPtr.Zero);
+                PostMessage(target, WM_COMMAND, (IntPtr)1,    IntPtr.Zero);
+                PostMessage(target, WM_COMMAND, (IntPtr)101,  IntPtr.Zero);
+
+                // Shot 6: Direct SysChar simulation & focus re-assert
+                PostMessage(target, WM_SYSCHAR, (IntPtr)VK_F1, (IntPtr)0x203B0001);
+                try { SetForegroundWindow(target); } catch { }
+
+                // Shot 7: Modifier key release safety net & detach thread input
+                keybd_event(VK_MENU,    SCAN_MENU, KEYEVENTF_KEYUP, UIntPtr.Zero);
+                keybd_event(VK_CONTROL, 0x1D,      KEYEVENTF_KEYUP, UIntPtr.Zero);
+                keybd_event(VK_SHIFT,   0x2A,      KEYEVENTF_KEYUP, UIntPtr.Zero);
+
+                if (attached)
+                {
+                    try { AttachThreadInput(curThreadId, targetThreadId, false); } catch { }
+                }
+
+                sw.Stop();
+                long lat = sw.ElapsedTicks * 1000000 / Stopwatch.Frequency;
+                Interlocked.Exchange(ref lastLatency, lat);
+                lock (statsLock)
+                {
+                    Interlocked.Increment(ref callCount);
+                    Interlocked.Add(ref sumLatency, lat);
+                    long curBest = Interlocked.Read(ref bestLatency);
+                    while (lat < curBest && Interlocked.CompareExchange(ref bestLatency, lat, curBest) != curBest)
+                    {
+                        curBest = Interlocked.Read(ref bestLatency);
+                    }
+                    long curWorst = Interlocked.Read(ref worstLatency);
+                    while (lat > curWorst && Interlocked.CompareExchange(ref worstLatency, lat, curWorst) != curWorst)
+                    {
+                        curWorst = Interlocked.Read(ref worstLatency);
+                    }
+                    if (lat < 20) histogram[0]++;
+                    else if (lat < 40) histogram[1]++;
+                    else if (lat < 60) histogram[2]++;
+                    else if (lat < 100) histogram[3]++;
+                    else histogram[4]++;
+                }
+
+                if (ANSWER_LOG_MIN_GAP_TICKS == 0)
+                {
+                    Log(string.Format("ANSWERED via 7-Shot Cascade in {0} us", lat));
                 }
                 else
                 {
-                    suppressedAnswerLogs++;
+                    long lnow = DateTime.UtcNow.Ticks;
+                    if (lastAnswerLogTick == 0 || (lnow - lastAnswerLogTick) >= ANSWER_LOG_MIN_GAP_TICKS)
+                    {
+                        lastAnswerLogTick = lnow;
+                        long skipped = suppressedAnswerLogs;
+                        suppressedAnswerLogs = 0;
+                        if (skipped > 0)
+                            Log(string.Format("ANSWERED via 7-Shot Cascade in {0} us (+{1} more cascades since last log)", lat, skipped));
+                        else
+                            Log(string.Format("ANSWERED via 7-Shot Cascade in {0} us", lat));
+                    }
+                    else
+                    {
+                        suppressedAnswerLogs++;
+                    }
                 }
-            }
             }
             finally { Monitor.Exit(fireLock); }
         }
@@ -750,6 +876,7 @@ namespace SpicyLamar
         [DllImport("user32.dll", CharSet = CharSet.Auto)] static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
         [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+        [DllImport("user32.dll", CharSet = CharSet.Auto)] static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
         [DllImport("user32.dll", CharSet = CharSet.Auto)] static extern IntPtr FindWindowEx(IntPtr parentHandle, IntPtr childAfter, string lclassName, string windowTitle);
         [DllImport("user32.dll")] static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
@@ -760,6 +887,9 @@ namespace SpicyLamar
         [DllImport("user32.dll")] static extern bool SetFocus(IntPtr hWnd);
         [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, uint nCmdShow);
         [DllImport("user32.dll")] static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+        [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr lpdwProcessId);
+        [DllImport("user32.dll")] static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
     }
 
     static class HotKeyManager

@@ -64,7 +64,7 @@ popd >nul
 :: 4. Compile the monolith
 :: ---------------------------------------------------------------------------
 echo [2/3] Compiling main.cpp...
-cl.exe /nologo /std:c++20 /O2 /Oi /GL /Gy /MT /utf-8 ^
+cl.exe /nologo /std:c++20 /O2 /Oi /Ot /Ox /GL /Gy /MT /utf-8 ^
     /DUNICODE /D_UNICODE /DSPICY_LAMAR_QUANTUM /DSPICY_LAMAR_TURBO /DNDEBUG /EHsc ^
     /c "src\main.cpp" /Fo:"build\obj\main.obj"
 if errorlevel 1 (
