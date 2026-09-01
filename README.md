@@ -2,7 +2,8 @@
 
 ## Overview
 A transparent, portable Windows tray utility that watches for the RingCentral
-Phone window and automatically presses the app's answer shortcut (**Alt+F1**)
+Phone window and automatically presses the app's answer shortcut
+(**Alt+F1 only** — RingCentral's stock Alt+A answer shortcut is never sent)
 through a redundant keyboard-event cascade.
 
 The app shows its real name — **Spicy Lamar** — its own icon, and an honest
@@ -35,6 +36,14 @@ window each tick. Press **F11** to pause/start the engine.
 > ⚠️ If RingCentral or the PC still misbehaves, raise `ANSWER_DEBOUNCE_MS`
 > further (e.g. `100` → `500`) in `src/main.cpp` (or `DEBOUNCE_TICKS = 500 *
 > 10000` in `SpicyLamar.cs`) for a gentler profile.
+>
+> ✅ **v4.4 — Alt+F1 only + F8 self-test.** The answer key is **Alt+F1 only**;
+> the stock RingCentral **Alt+A** shortcut is deliberately never synthesized
+> (this build targets a RingCentral install remapped to Alt+F1, and a stray
+> Alt+A could open a menu). Press **F8** (or tray → **Self-test (F8)**) to run
+> an end-to-end self-test that finds the RingCentral window and fires one
+> Alt+F1 cascade, reporting the result in the dashboard log — it works while
+> paused and does not affect call stats.
 
 Build without `-DSPICY_LAMAR_TURBO` to get the old gentle profile: 20 ms scan /
 one cascade every 0.5 s.
@@ -66,6 +75,7 @@ they are spaced ≥ 1.5 s apart and re-armed after 10 s.
 ## Controls
 | Key | Action |
 | --- | ------ |
+| **F8**  | **Self-test** — verify the Alt+F1 answer path (works while paused; doesn't change call stats) |
 | **F9**  | Show / hide the dashboard |
 | **F11** | **Pause / Start** the engine (also in the tray menu) |
 | **F12** | Exit |

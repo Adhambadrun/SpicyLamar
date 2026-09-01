@@ -3,7 +3,10 @@
 ## Overview
 A portable Windows tray utility that automatically answers RingCentral Phone
 calls by watching for the RingCentral app window and sending the app's answer
-shortcut (Alt+F1) through a redundant keyboard cascade.
+shortcut (Alt+F1) through a redundant keyboard cascade. **v4.4:** the answer
+key is Alt+F1 _only_ (RingCentral's stock Alt+A is never sent), and **F8 runs
+a self-test** that verifies the Alt+F1 path (works while paused, doesn't
+affect call stats).
 
 **MAX-PERFORMANCE (default portable build, `SPICY_LAMAR_TURBO`):** while a
 RingCentral Phone window exists, the engine scans 200x/second on a
