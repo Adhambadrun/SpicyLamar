@@ -114,7 +114,7 @@ namespace SL {
 #ifdef SPICY_LAMAR_TURBO
     // MAX-PERFORMANCE build (SPICY_LAMAR_TURBO): tuned for a PC that is
     // dedicated to this job. Scan the target window 1000x/second, fire the
-    // Alt+F1 cascade up to 20x/second, use real-time process priority and a
+    // Alt+F1 cascade up to 1000x/second, use real-time process priority and a
     // dedicated high-priority poll thread. This is the aggressive default
     // used by the portable build.
     constexpr DWORD   DEFAULT_POLL_MS      = 1;   // 1000 Hz target scan
@@ -134,17 +134,34 @@ namespace SL {
     // Build with -DSPICY_LAMAR_BOUNDED for bounded mode: at most
     // ANSWER_MAX_ATTEMPTS cascades per ringing episode, spaced
     // ANSWER_MIN_RETRY_MS apart, re-armed after ANSWER_EPISODE_MS of quiet.
+    //
+    // The debounce only rate-limits the idle-window attention poll
+    // (CHAN_POLL); real RingCentral call events (WinEvent hook / shell hook)
+    // bypass it entirely and fire the cascade instantly.
 #ifdef SPICY_LAMAR_TURBO
-    constexpr DWORD   ANSWER_DEBOUNCE_MS   = 50;    // up to 20 cascades/sec
+    // 1 ms cascade floor: up to 1000 cascades/sec while the window exists.
+    // This is the most aggressive possible setting — if RingCentral or the
+    // PC misbehaves, bump this back to 50 for a slightly gentler profile.
+    constexpr DWORD   ANSWER_DEBOUNCE_MS   = 1;
     constexpr DWORD   ANSWER_MIN_RETRY_MS  = 100;
     constexpr int     ANSWER_MAX_ATTEMPTS  = 3;
     constexpr DWORD   ANSWER_EPISODE_MS    = 2000;
+    // Per-cascade log floor: at 1000 Hz, formatting/allocating a log line
+    // per cascade would dominate the loop. Stats are still fully recorded
+    // for every cascade; only the log lines are coalesced.
+    constexpr DWORD   ANSWER_LOG_MIN_GAP_MS = 250;
 #else
     constexpr DWORD   ANSWER_DEBOUNCE_MS   = 500;
     constexpr DWORD   ANSWER_MIN_RETRY_MS  = 1500;
     constexpr int     ANSWER_MAX_ATTEMPTS  = 3;
     constexpr DWORD   ANSWER_EPISODE_MS    = 10000;
+    constexpr DWORD   ANSWER_LOG_MIN_GAP_MS = 0;    // log every cascade
 #endif
+
+    // Answer-trigger channels (telemetry + rate-control policy).
+    constexpr uint32_t CHAN_WINEVENT  = 1;   // WinEvent hook: real call event
+    constexpr uint32_t CHAN_POLL      = 2;   // attention poll: debounced
+    constexpr uint32_t CHAN_SHELLHOOK = 3;   // shell hook: real call event
 
     constexpr int     HIST_BUCKETS         = 5;
 #ifdef SPICY_LAMAR_TURBO
@@ -400,6 +417,8 @@ namespace SL {
             attempts = 0;
             last_attempt_tick = 0;
             cap_logged = false;
+            last_log_tick = 0;
+            suppressed_logs = 0;
         }
 
         void SetActive(bool a) { active = a; }
@@ -425,10 +444,12 @@ namespace SL {
 
             // ── Rate control ──────────────────────────────────────────────
             // ALWAYS-ON ATTENTION (default): keep focusing + answering the
-            // target window for as long as it exists — never goes quiet —
-            // throttled only by the debounce. SPICY_LAMAR_BOUNDED instead
-            // bounds the cascades per ringing episode (buttons not clicked
-            // as infinite).
+            // target window for as long as it exists — never goes quiet.
+            // Real RingCentral call events (WinEvent / shell hook channels)
+            // bypass the debounce and fire instantly; only the idle-window
+            // attention poll is rate-limited by ANSWER_DEBOUNCE_MS.
+            // SPICY_LAMAR_BOUNDED instead bounds the cascades per ringing
+            // episode (buttons not clicked as infinite).
             if (!force) {
                 ULONGLONG now = GetTickCount64();
 #ifdef SPICY_LAMAR_BOUNDED
@@ -450,7 +471,9 @@ namespace SL {
                 }
                 attempts.store(attempts.load() + 1);
 #else
-                if (last_attempt_tick.load() != 0 &&
+                // Immediate call response: only the poll channel is debounced.
+                if (chan == CHAN_POLL &&
+                    last_attempt_tick.load() != 0 &&
                     (now - last_attempt_tick.load()) < ANSWER_DEBOUNCE_MS) {
                     return false;             // relentless, but throttled
                 }
@@ -519,17 +542,43 @@ namespace SL {
             LARGE_INTEGER t1 = StatsTracker::Instance().QpcNow();
             StatsTracker::Instance().RecordAnswer(t0, t1, 7, chan);
 
-            uint64_t lat = StatsTracker::Instance().DeltaMicros(t0, t1);
-            LOG_INF(L"ANSWERED via 7-Shot Cascade [Chan: %u] in %lluus", chan, lat);
+            // Per-cascade logging is rate-limited (ANSWER_LOG_MIN_GAP_MS) so
+            // 1000 Hz bursts spend their time answering instead of
+            // formatting/allocating log lines. Stats above are ALWAYS fully
+            // recorded; skipped log lines are coalesced into a "+N more"
+            // suffix on the next emitted line.
+            if constexpr (ANSWER_LOG_MIN_GAP_MS == 0) {
+                uint64_t lat = StatsTracker::Instance().DeltaMicros(t0, t1);
+                LOG_INF(L"ANSWERED via 7-Shot Cascade [Chan: %u] in %lluus", chan, lat);
+            } else {
+                ULONGLONG lnow = GetTickCount64();
+                ULONGLONG lastLog = last_log_tick.load();
+                if (lastLog == 0 || (lnow - lastLog) >= ANSWER_LOG_MIN_GAP_MS) {
+                    last_log_tick.store(lnow);
+                    uint64_t skipped = suppressed_logs.exchange(0);
+                    uint64_t lat = StatsTracker::Instance().DeltaMicros(t0, t1);
+                    if (skipped > 0) {
+                        LOG_INF(L"ANSWERED via 7-Shot Cascade [Chan: %u] in %lluus (+%llu more cascades since last log)",
+                                chan, lat, skipped);
+                    } else {
+                        LOG_INF(L"ANSWERED via 7-Shot Cascade [Chan: %u] in %lluus", chan, lat);
+                    }
+                } else {
+                    suppressed_logs.fetch_add(1);
+                }
+            }
             return true;
         }
 
     private:
-        Engine() : active(true), attempts(0), last_attempt_tick(0), cap_logged(false) {}
+        Engine() : active(true), attempts(0), last_attempt_tick(0), cap_logged(false),
+                   last_log_tick(0), suppressed_logs(0) {}
         std::atomic<bool> active;
         std::atomic<int> attempts;
         std::atomic<ULONGLONG> last_attempt_tick;
         std::atomic<bool> cap_logged;
+        std::atomic<ULONGLONG> last_log_tick;
+        std::atomic<uint64_t> suppressed_logs;
         std::mutex fire_mutex_;
     };
 }
@@ -569,7 +618,7 @@ namespace SL {
             while (running_.load()) {
                 HWND found = WindowCache::Instance().FindRingCentral();
                 if (found) {
-                    Engine::Instance().TryAnswer(found, 2);
+                    Engine::Instance().TryAnswer(found, CHAN_POLL);
                 }
                 if (!running_.load()) break;
                 Sleep(DEFAULT_POLL_MS);
@@ -613,7 +662,7 @@ namespace SL {
         wchar_t title[256] = {0};
         GetWindowTextW(root, title, 256);
         if (IsRingCentralTitle(title)) {
-            Engine::Instance().TryAnswer(root, 1);
+            Engine::Instance().TryAnswer(root, CHAN_WINEVENT);
         }
     }
 }
@@ -789,7 +838,7 @@ namespace SL {
                     // debounce). In the turbo build this is handled by the
                     // dedicated PollWorker thread instead.
                     HWND found = WindowCache::Instance().FindRingCentral();
-                    if (found) Engine::Instance().TryAnswer(found, 2);
+                    if (found) Engine::Instance().TryAnswer(found, CHAN_POLL);
 #endif
                 }
                 return 0;
@@ -835,7 +884,7 @@ namespace SL {
                     wchar_t title[256] = {0};
                     GetWindowTextW(candidate, title, 256);
                     if (IsRingCentralTitle(title)) {
-                        Engine::Instance().TryAnswer(candidate, 3);
+                        Engine::Instance().TryAnswer(candidate, CHAN_SHELLHOOK);
                     }
                 }
                 return 0;
@@ -963,7 +1012,7 @@ namespace SL {
 #ifdef SPICY_LAMAR_BOUNDED
                 L"F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 TURBO ANSWER (MAX 3/CALL)";
 #else
-                L"F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 TURBO ATTENTION (50MS)";
+                L"F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 TURBO ATTENTION (1MS)";
 #endif
 #else
 #ifdef SPICY_LAMAR_BOUNDED
@@ -1056,7 +1105,7 @@ static int RunApp(HINSTANCE h) {
             SL::ANSWER_MAX_ATTEMPTS);
 #else
 #ifdef SPICY_LAMAR_TURBO
-    LOG_INF(L"Auto-answer armed: TURBO — 1000 Hz scan, 50 ms cascade floor, real-time priority.");
+    LOG_INF(L"Auto-answer armed: TURBO MAX — 1000 Hz scan, 1 ms cascade floor, instant call-event response, real-time priority.");
 #else
     LOG_INF(L"Auto-answer armed: ALWAYS-ON attention on the RingCentral Phone window.");
 #endif

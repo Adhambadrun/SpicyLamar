@@ -14,8 +14,18 @@ with `SPICY_LAMAR_TURBO` for a PC dedicated to this job: while a RingCentral
 Phone window exists it scans the target 1000x/second on a dedicated
 time-critical poll thread, runs the whole process at real-time priority
 (fall-back to high if the OS denies it), and fires the Alt+F1 answer cascade
-every 50 ms. A cached-window fast path avoids walking every window each tick.
-Press **F11** to pause/start the engine.
+with a **1 ms floor** — up to 1000 cascades/second while the window exists.
+Real RingCentral call events (window shown / activated / title change) bypass
+the polling debounce entirely and fire the cascade **instantly**; only the
+idle-window attention poll is rate-limited. Per-cascade logging is coalesced
+so 1000 Hz bursts spend their time answering, not formatting log lines
+(stats stay fully recorded). A cached-window fast path avoids walking every
+window each tick. Press **F11** to pause/start the engine.
+
+> ⚠️ **This is the most aggressive possible setting.** If RingCentral or the
+> PC misbehaves, bump `ANSWER_DEBOUNCE_MS` from `1` to `50` in `src/main.cpp`
+> (or `DEBOUNCE_TICKS = 50 * 10000` in `SpicyLamar.cs`) for a slightly
+> gentler profile.
 
 Build without `-DSPICY_LAMAR_TURBO` to get the old gentle profile: 20 ms scan /
 one cascade every 0.5 s.

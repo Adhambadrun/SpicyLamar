@@ -268,7 +268,7 @@ namespace SpicyLamar
                         ? "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 TURBO ANSWER (MAX 3/CALL)"
                         : "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ANSWER (MAX 3/CALL)")
                     : (AnswerEngine.TURBO_MODE
-                        ? "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 TURBO ATTENTION (50MS)"
+                        ? "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 TURBO ATTENTION (1MS)"
                         : "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ALWAYS-ON ATTENTION");
             g.DrawString(footer, monoFont, dimBrush, 20, 462);
         }
@@ -358,7 +358,9 @@ namespace SpicyLamar
         // ── Answer engine rate control ──────────────────────────────────────
         // BOUNDED_MODE=false (default): ALWAYS-ON ATTENTION — while a
         // RingCentral Phone window exists, Spicy Lamar relentlessly focuses
-        // it and fires the Alt+F1 cascade, throttled only by DEBOUNCE_TICKS.
+        // it and fires the Alt+F1 cascade. Real call events (WinEvent hook)
+        // bypass the debounce and fire instantly; only the idle-window
+        // attention poll is rate-limited by DEBOUNCE_TICKS.
         // The app never goes quiet; use F11 (pause/start) to silence it.
         // BOUNDED_MODE=true: at most MAX_ATTEMPTS_PER_EPISODE cascades per
         // ringing episode, spaced MIN_RETRY_TICKS apart, re-armed after
@@ -368,10 +370,19 @@ namespace SpicyLamar
         // Fan out to the classic 20 ms scan / 0.5 s heart-beat by setting
         // this to false and rebuilding.
         public const bool TURBO_MODE = true;
-        private const long DEBOUNCE_TICKS         = TURBO_MODE ? (50 * 10000)    : (500 * 10000);   // 50 ms / 500 ms in 100-ns ticks
+        // 1 ms cascade floor: up to 1000 cascades/sec while the window exists.
+        // This is the most aggressive possible setting — if RingCentral or the
+        // PC misbehaves, bump the 1 back to 50 for a slightly gentler profile.
+        private const long DEBOUNCE_TICKS         = TURBO_MODE ? (1 * 10000)     : (500 * 10000);   // 1 ms / 500 ms in 100-ns ticks
         private const long MIN_RETRY_TICKS        = TURBO_MODE ? (100 * 10000)   : (1500 * 10000);  // 100 ms / 1500 ms in 100-ns ticks
         private const long EPISODE_RESET_TICKS    = TURBO_MODE ? (2000 * 10000)  : (10000 * 10000); // 2000 ms / 10000 ms in 100-ns ticks
         private const int  MAX_ATTEMPTS_PER_EPISODE = 3;
+        // Per-cascade log floor: at 1000 Hz, formatting/allocating a log line
+        // per cascade would dominate the loop. Stats are still fully recorded
+        // for every cascade; only log lines are coalesced ("+N more").
+        private const long ANSWER_LOG_MIN_GAP_TICKS = TURBO_MODE ? (250 * 10000) : 0; // 250 ms / log everything
+        private long lastAnswerLogTick = 0;
+        private long suppressedAnswerLogs = 0;
         private int episodeAttempts = 0;
         private bool capLogged = false;
         private readonly object fireLock = new object();
@@ -511,11 +522,21 @@ namespace SpicyLamar
             GetWindowText(root, sb, 256);
             if (IsTargetTitle(sb.ToString()))
             {
-                TryFire(root);
+                // Real call event: bypass the polling debounce, fire instantly.
+                TryFire(root, true);
             }
         }
 
         public void TryFire(IntPtr target)
+        {
+            TryFire(target, false);
+        }
+
+        // immediate=true (real RingCentral call events from the WinEvent hook)
+        // bypasses the polling debounce and fires the cascade instantly;
+        // immediate=false (the attention poll) is rate-limited by
+        // DEBOUNCE_TICKS so an idle window doesn't fully saturate the engine.
+        public void TryFire(IntPtr target, bool immediate)
         {
             // One cascade at a time: the 1 ms poll timer and the WinEvent hook
             // can race on different threads.
@@ -530,9 +551,11 @@ namespace SpicyLamar
 
             // ── Rate control ─────────────────────────────────────────────────
             // ALWAYS-ON ATTENTION (default): keep focusing + answering the
-            // target window for as long as it exists — never goes quiet —
-            // throttled only by the debounce. BOUNDED_MODE instead bounds
-            // the cascades per ringing episode.
+            // target window for as long as it exists — never goes quiet.
+            // Real call events (immediate=true) bypass the debounce and fire
+            // instantly; only the attention poll is throttled by
+            // DEBOUNCE_TICKS. BOUNDED_MODE instead bounds the cascades per
+            // ringing episode.
             long now = DateTime.UtcNow.Ticks;
             lock (fireLock)
             {
@@ -563,7 +586,8 @@ namespace SpicyLamar
                 }
                 else
                 {
-                    if (last != 0 && (now - last) < DEBOUNCE_TICKS)
+                    // Immediate call response: only the poll path is debounced.
+                    if (!immediate && last != 0 && (now - last) < DEBOUNCE_TICKS)
                     {
                         return; // relentless, but throttled
                     }
@@ -657,7 +681,32 @@ namespace SpicyLamar
                 else if (lat < 100) histogram[3]++;
                 else histogram[4]++;
             }
-            Log(string.Format("ANSWERED via 7-Shot Cascade in {0} us", lat));
+            // Per-cascade logging is rate-limited (ANSWER_LOG_MIN_GAP_TICKS)
+            // so 1000 Hz bursts spend their time answering instead of
+            // formatting/allocating log lines. Stats above are ALWAYS fully
+            // recorded; skipped lines are coalesced into a "+N more" suffix.
+            if (ANSWER_LOG_MIN_GAP_TICKS == 0)
+            {
+                Log(string.Format("ANSWERED via 7-Shot Cascade in {0} us", lat));
+            }
+            else
+            {
+                long lnow = DateTime.UtcNow.Ticks;
+                if (lastAnswerLogTick == 0 || (lnow - lastAnswerLogTick) >= ANSWER_LOG_MIN_GAP_TICKS)
+                {
+                    lastAnswerLogTick = lnow;
+                    long skipped = suppressedAnswerLogs;
+                    suppressedAnswerLogs = 0;
+                    if (skipped > 0)
+                        Log(string.Format("ANSWERED via 7-Shot Cascade in {0} us (+{1} more cascades since last log)", lat, skipped));
+                    else
+                        Log(string.Format("ANSWERED via 7-Shot Cascade in {0} us", lat));
+                }
+                else
+                {
+                    suppressedAnswerLogs++;
+                }
+            }
             }
             finally { Monitor.Exit(fireLock); }
         }
