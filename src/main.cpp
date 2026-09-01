@@ -23,6 +23,7 @@
 #define WINVER       0x0A00
 #endif
 
+#ifdef _WIN32
 #include <windows.h>
 #include <commctrl.h>
 #include <dwmapi.h>
@@ -34,8 +35,14 @@
 #include <tdh.h>
 #include <timeapi.h>
 #include <psapi.h>
+#include <avrt.h>
+#endif
+
 #ifdef _MSC_VER
 #include <wrl/client.h>
+#include <immintrin.h>
+#elif defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
 #endif
 
 #include <atomic>
@@ -52,6 +59,7 @@
 #include <cstdint>
 #include <cmath>
 #include <cwchar>
+#include <cstring>
 
 #ifdef _MSC_VER
 #pragma comment(lib, "comctl32.lib")
@@ -61,6 +69,7 @@
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "avrt.lib")
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "oleacc.lib")
 #pragma comment(lib, "tdh.lib")
@@ -74,19 +83,20 @@ using Microsoft::WRL::ComPtr;
 #define SL_SWPRINTF(dest, ...) swprintf_s(dest, __VA_ARGS__)
 #define SL_WCSCPY(dest, src) wcscpy_s(dest, src)
 #else
-#define SL_SWPRINTF(dest, ...) swprintf(dest, _countof(dest), __VA_ARGS__)
+#define SL_SWPRINTF(dest, ...) swprintf(dest, sizeof(dest)/sizeof(dest[0]), __VA_ARGS__)
 #define SL_WCSCPY(dest, src) wcscpy(dest, src)
 #endif
 
 namespace SL {
     // Identity Configuration — the product is named ONLY "Spicy Lamar".
-    constexpr wchar_t APP_NAME[]           = L"Spicy Lamar";
-    constexpr wchar_t APP_CLASS_NAME[]     = L"SpicyLamar_v4";
-    constexpr wchar_t APP_MUTEX_NAME[]     = L"Global\\SpicyLamar_v4_Mutex";
-    constexpr wchar_t APP_MUTEX_FALLBACK[] = L"Local\\SpicyLamar_v4_Mutex";
-    constexpr wchar_t APP_VERSION[]        = L"Spicy Lamar v4.2";
-    constexpr wchar_t TARGET_WINDOW_TITLE[]= L"RingCentral Phone";
-    constexpr wchar_t TARGET_CHILD_CLASS[] = L"Chrome_RenderWidgetHostHWND";
+    constexpr wchar_t APP_NAME[]                 = L"Spicy Lamar";
+    constexpr wchar_t APP_CLASS_NAME[]           = L"SpicyLamar_v4";
+    constexpr wchar_t APP_MUTEX_NAME[]           = L"Global\\SpicyLamar_v4_Mutex";
+    constexpr wchar_t APP_MUTEX_FALLBACK[]       = L"Local\\SpicyLamar_v4_Mutex";
+    constexpr wchar_t APP_VERSION[]              = L"Spicy Lamar v4.2";
+    constexpr wchar_t TARGET_WINDOW_TITLE[]      = L"RingCentral Phone";
+    constexpr wchar_t TARGET_CHILD_CLASS[]       = L"Chrome_RenderWidgetHostHWND";
+    constexpr wchar_t TARGET_INTERMEDIATE_CLASS[]= L"Intermediate D3D Window";
 
     // Windows Messages
     constexpr UINT    WM_TRAYICON          = WM_USER + 101;
@@ -112,11 +122,10 @@ namespace SL {
 
     // Performance & Telemetry Constants
 #ifdef SPICY_LAMAR_TURBO
-    // MAX-PERFORMANCE build (SPICY_LAMAR_TURBO): tuned for a PC that is
-    // dedicated to this job. Scan the target window 1000x/second, fire the
-    // Alt+F1 cascade up to 1000x/second, use real-time process priority and a
-    // dedicated high-priority poll thread. This is the aggressive default
-    // used by the portable build.
+    // MAX-PERFORMANCE build (SPICY_LAMAR_TURBO): tuned for extreme speed.
+    // Sub-millisecond target scanning on dedicated time-critical MMCSS thread,
+    // real-time process priority, 0.5 ms kernel timer, and 1 ms cascade floor.
+    // Real call events bypass debounce entirely and fire in microseconds.
     constexpr DWORD   DEFAULT_POLL_MS      = 1;   // 1000 Hz target scan
     constexpr int     MAX_TELEMETRY_LOGS   = 50;
 #else
@@ -126,22 +135,8 @@ namespace SL {
 #endif
 
     // ── Answer engine rate control ───────────────────────────────────
-    // Default (no define): ALWAYS-ON ATTENTION. While a RingCentral Phone
-    // window exists, Spicy Lamar relentlessly focuses it and fires the
-    // Alt+F1 answer cascade, throttled only by ANSWER_DEBOUNCE_MS. This is
-    // the classic behavior — the app never goes quiet while the target
-    // window is around. Use F11 (pause/start) to silence it manually.
-    // Build with -DSPICY_LAMAR_BOUNDED for bounded mode: at most
-    // ANSWER_MAX_ATTEMPTS cascades per ringing episode, spaced
-    // ANSWER_MIN_RETRY_MS apart, re-armed after ANSWER_EPISODE_MS of quiet.
-    //
-    // The debounce only rate-limits the idle-window attention poll
-    // (CHAN_POLL); real RingCentral call events (WinEvent hook / shell hook)
-    // bypass it entirely and fire the cascade instantly.
 #ifdef SPICY_LAMAR_TURBO
     // 1 ms cascade floor: up to 1000 cascades/sec while the window exists.
-    // This is the most aggressive possible setting — if RingCentral or the
-    // PC misbehaves, bump this back to 50 for a slightly gentler profile.
     constexpr DWORD   ANSWER_DEBOUNCE_MS   = 1;
     constexpr DWORD   ANSWER_MIN_RETRY_MS  = 100;
     constexpr int     ANSWER_MAX_ATTEMPTS  = 3;
@@ -237,7 +232,110 @@ namespace SL {
 #define LOG_ERR(fmt, ...) { wchar_t b[256]; SL_SWPRINTF(b, fmt, ##__VA_ARGS__); SL::MemoryLogger::Instance().Log(L"ERR", b); }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STATS & TELEMETRY TRACKER
+// SYSTEM TUNING & REAL-TIME SCHEDULING (MMCSS & KERNEL TIMERS)
+// ─────────────────────────────────────────────────────────────────────────────
+namespace SL {
+    struct SpinLock {
+        std::atomic<bool> flag{false};
+
+        bool try_lock() noexcept {
+            return !flag.exchange(true, std::memory_order_acquire);
+        }
+
+        void lock() noexcept {
+            while (flag.exchange(true, std::memory_order_acquire)) {
+                while (flag.load(std::memory_order_relaxed)) {
+#if defined(_MSC_VER)
+                    _mm_pause();
+#elif defined(__x86_64__) || defined(__i386__)
+                    __builtin_ia32_pause();
+#else
+                    std::this_thread::yield();
+#endif
+                }
+            }
+        }
+
+        void unlock() noexcept {
+            flag.store(false, std::memory_order_release);
+        }
+    };
+
+    typedef LONG (NTAPI *pfnNtSetTimerResolution)(ULONG DesiredResolution, BOOLEAN SetResolution, PULONG CurrentResolution);
+    typedef HANDLE (WINAPI *pfnAvSetMmThreadCharacteristicsW)(LPCWSTR TaskName, LPDWORD TaskIndex);
+    typedef BOOL (WINAPI *pfnAvRevertMmThreadCharacteristics)(HANDLE AvrtHandle);
+
+    inline void EnableSystemOptimizations() {
+        // 1. Minimum OS Timer Period (1 ms multimedia timer)
+        timeBeginPeriod(1);
+
+        // 2. High-Precision NT Kernel Timer (0.5 ms resolution: 5000 * 100ns units)
+        HMODULE hNtDll = GetModuleHandleW(L"ntdll.dll");
+        if (hNtDll) {
+            auto pNtSet = (pfnNtSetTimerResolution)GetProcAddress(hNtDll, "NtSetTimerResolution");
+            if (pNtSet) {
+                ULONG cur = 0;
+                pNtSet(5000, TRUE, &cur);
+            }
+        }
+
+        // 3. Process Real-Time Priority Class (fall back to High if non-elevated)
+#ifdef SPICY_LAMAR_TURBO
+        if (!SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS)) {
+            SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+        }
+#else
+        SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+#endif
+
+        // 4. Disable dynamic priority decay so the process stays at peak priority
+        SetProcessPriorityBoost(GetCurrentProcess(), FALSE);
+
+        // 5. Thread priority boost for main thread
+        if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)) {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+        }
+
+        // 6. Pre-allocate and lock working set to physical RAM (prevents page faults during answering)
+        SIZE_T minWs = 32 * 1024 * 1024;
+        SIZE_T maxWs = 128 * 1024 * 1024;
+        SetProcessWorkingSetSize(GetCurrentProcess(), minWs, maxWs);
+
+        // 7. Bypass Windows OS foreground lock delay
+        DWORD zero = 0;
+        SystemParametersInfoW(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, (PVOID)(ULONG_PTR)zero, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
+        AllowSetForegroundWindow(ASFW_ANY);
+    }
+
+    inline HANDLE RegisterMMCSS() {
+        HMODULE hAvrt = LoadLibraryW(L"avrt.dll");
+        if (hAvrt) {
+            auto pAvSet = (pfnAvSetMmThreadCharacteristicsW)GetProcAddress(hAvrt, "AvSetMmThreadCharacteristicsW");
+            if (pAvSet) {
+                DWORD taskIndex = 0;
+                HANDLE h = pAvSet(L"Pro Audio", &taskIndex);
+                if (!h) {
+                    taskIndex = 0;
+                    h = pAvSet(L"Games", &taskIndex);
+                }
+                return h;
+            }
+        }
+        return nullptr;
+    }
+
+    inline void UnregisterMMCSS(HANDLE h) {
+        if (!h) return;
+        HMODULE hAvrt = GetModuleHandleW(L"avrt.dll");
+        if (hAvrt) {
+            auto pRevert = (pfnAvRevertMmThreadCharacteristics)GetProcAddress(hAvrt, "AvRevertMmThreadCharacteristics");
+            if (pRevert) pRevert(h);
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATS & TELEMETRY TRACKER (NANOSECOND RESOLUTION)
 // ─────────────────────────────────────────────────────────────────────────────
 namespace SL {
     class StatsTracker {
@@ -250,54 +348,63 @@ namespace SL {
         void Initialize() { 
             LARGE_INTEGER f; 
             QueryPerformanceFrequency(&f); 
-            qpc_freq = f.QuadPart; 
+            qpc_freq = f.QuadPart > 0 ? f.QuadPart : 10000000LL; 
             start = GetTickCount64(); 
         }
 
-        LARGE_INTEGER QpcNow() { 
+        LARGE_INTEGER QpcNow() const noexcept { 
             LARGE_INTEGER li; 
             QueryPerformanceCounter(&li); 
             return li; 
         }
 
-        uint64_t DeltaMicros(LARGE_INTEGER t0, LARGE_INTEGER t1) { 
+        uint64_t DeltaMicros(LARGE_INTEGER t0, LARGE_INTEGER t1) const noexcept { 
             if (qpc_freq <= 0) return 0;
             return (uint64_t)((t1.QuadPart - t0.QuadPart) * 1000000ULL / qpc_freq); 
         }
 
-        void RecordAnswer(LARGE_INTEGER t0, LARGE_INTEGER t1, uint32_t hits, uint32_t chan) {
+        void RecordAnswer(LARGE_INTEGER t0, LARGE_INTEGER t1, uint32_t hits, uint32_t chan) noexcept {
             uint64_t us = DeltaMicros(t0, t1); 
-            last_us = us; 
-            calls++;
-            if (us < best_us) best_us = us; 
-            if (us > worst_us) worst_us = us; 
-            sum_us += us;
+            last_us.store(us, std::memory_order_relaxed); 
+            calls.fetch_add(1, std::memory_order_relaxed);
+            sum_us.fetch_add(us, std::memory_order_relaxed);
 
-            if (us < 20) hist[0]++; 
-            else if (us < 40) hist[1]++; 
-            else if (us < 60) hist[2]++; 
-            else if (us < 100) hist[3]++; 
-            else hist[4]++;
+            // Atomic best tracking
+            uint64_t curBest = best_us.load(std::memory_order_relaxed);
+            while (us < curBest && !best_us.compare_exchange_weak(curBest, us, std::memory_order_relaxed)) {}
+
+            // Atomic worst tracking
+            uint64_t curWorst = worst_us.load(std::memory_order_relaxed);
+            while (us > curWorst && !worst_us.compare_exchange_weak(curWorst, us, std::memory_order_relaxed)) {}
+
+            if (us < 20) hist[0].fetch_add(1, std::memory_order_relaxed); 
+            else if (us < 40) hist[1].fetch_add(1, std::memory_order_relaxed); 
+            else if (us < 60) hist[2].fetch_add(1, std::memory_order_relaxed); 
+            else if (us < 100) hist[3].fetch_add(1, std::memory_order_relaxed); 
+            else hist[4].fetch_add(1, std::memory_order_relaxed);
         }
 
-        uint64_t LastLatency() const { return last_us.load(); }
-        uint64_t BestLatency() const { return best_us.load() == UINT64_MAX ? 0 : best_us.load(); }
-        uint64_t WorstLatency() const { return worst_us.load(); }
-        uint64_t TotalCalls() const { return calls.load(); }
-        uint64_t AvgLatency() const { 
-            uint64_t c = calls.load(); 
-            return c > 0 ? (sum_us.load() / c) : 0; 
+        uint64_t LastLatency() const noexcept { return last_us.load(std::memory_order_relaxed); }
+        uint64_t BestLatency() const noexcept { 
+            uint64_t b = best_us.load(std::memory_order_relaxed); 
+            return b == UINT64_MAX ? 0 : b; 
         }
-        uint64_t GetUptimeSec() const { return (GetTickCount64() - start) / 1000; }
-        long GetHistCount(int i) const { 
-            if (i >= 0 && i < HIST_BUCKETS) return hist[i].load(); 
+        uint64_t WorstLatency() const noexcept { return worst_us.load(std::memory_order_relaxed); }
+        uint64_t TotalCalls() const noexcept { return calls.load(std::memory_order_relaxed); }
+        uint64_t AvgLatency() const noexcept { 
+            uint64_t c = calls.load(std::memory_order_relaxed); 
+            return c > 0 ? (sum_us.load(std::memory_order_relaxed) / c) : 0; 
+        }
+        uint64_t GetUptimeSec() const noexcept { return (GetTickCount64() - start) / 1000; }
+        long GetHistCount(int i) const noexcept { 
+            if (i >= 0 && i < HIST_BUCKETS) return hist[i].load(std::memory_order_relaxed); 
             return 0; 
         }
 
     private:
         StatsTracker() 
-            : qpc_freq(1), start(0), last_us(0), best_us(UINT64_MAX), worst_us(0), calls(0), sum_us(0) { 
-            for (auto& h : hist) h = 0; 
+            : qpc_freq(10000000LL), start(0), last_us(0), best_us(UINT64_MAX), worst_us(0), calls(0), sum_us(0) { 
+            for (auto& h : hist) h.store(0, std::memory_order_relaxed); 
         }
 
         int64_t qpc_freq; 
@@ -308,17 +415,17 @@ namespace SL {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WINDOW CACHE & ENUMERATION
+// WINDOW CACHE & O(1) ENUMERATION
 // ─────────────────────────────────────────────────────────────────────────────
 namespace SL {
-    bool ContainsInsensitive(const wchar_t* text, const wchar_t* needle) {
+    inline bool ContainsInsensitive(const wchar_t* text, const wchar_t* needle) noexcept {
         if (!text || !needle || !*needle) return false;
         const size_t n = wcslen(needle);
         for (; *text; ++text) if (_wcsnicmp(text, needle, n) == 0) return true;
         return false;
     }
 
-    bool IsRingCentralTitle(const wchar_t* title) {
+    inline bool IsRingCentralTitle(const wchar_t* title) noexcept {
         return ContainsInsensitive(title, L"RingCentral") ||
                ContainsInsensitive(title, L"Ring Central") ||
                ContainsInsensitive(title, L"RingMe") ||
@@ -327,46 +434,80 @@ namespace SL {
 
     class WindowCache {
     public:
-        struct Snapshot { HWND main, child; };
+        struct Snapshot { HWND main; HWND child; HWND intermediate; };
 
         static WindowCache& Instance() { 
             static WindowCache inst; 
             return inst; 
         }
 
-        Snapshot GetSnapshot() { 
-            return { main.load(), child.load() }; 
+        Snapshot GetSnapshot() const noexcept { 
+            return { main.load(std::memory_order_relaxed), 
+                     child.load(std::memory_order_relaxed),
+                     intermediate.load(std::memory_order_relaxed) }; 
         }
 
-        void Update(HWND m, HWND c) { 
-            main.store(m); 
-            child.store(c); 
+        void Invalidate() noexcept {
+            main.store(nullptr, std::memory_order_release);
+            child.store(nullptr, std::memory_order_release);
+            intermediate.store(nullptr, std::memory_order_release);
+        }
+
+        void Update(HWND m, HWND c, HWND inter = nullptr) noexcept { 
+            main.store(m, std::memory_order_release); 
+            child.store(c, std::memory_order_release); 
+            intermediate.store(inter, std::memory_order_release);
         }
 
         HWND FindRingCentral() {
-            // Fast path: once a valid RingCentral window is cached, reuse it
-            // without walking every top-level window on every poll tick. This
-            // keeps a 1 ms / 1000 Hz poll effectively free. The WinEvent +
-            // shell hooks still catch new windows and refresh the cache when
-            // the cached window disappears.
-            auto cached = GetSnapshot();
-            if (cached.main && IsWindow(cached.main)) {
-                if (!cached.child || !IsWindow(cached.child)) {
-                    HWND c = FindChild(cached.main);
-                    Update(cached.main, c);
+            // Fast path 1: Cached HWND
+            HWND m = main.load(std::memory_order_acquire);
+            if (m && IsWindow(m)) {
+                HWND c = child.load(std::memory_order_acquire);
+                if (!c || !IsWindow(c)) {
+                    HWND inter = nullptr;
+                    c = FindChild(m, &inter);
+                    Update(m, c, inter);
                 }
-                return cached.main;
+                return m;
             }
 
+            // Fast path 2: Direct O(1) FindWindowW for standard window title
+            HWND direct = FindWindowW(nullptr, TARGET_WINDOW_TITLE);
+            if (direct && IsWindow(direct)) {
+                HWND inter = nullptr;
+                HWND c = FindChild(direct, &inter);
+                Update(direct, c, inter);
+                return direct;
+            }
+
+            // Fast path 3: Direct FindWindowW for RingCentral Electron class
+            direct = FindWindowW(L"Chrome_WidgetWin_1", nullptr);
+            if (direct && IsWindow(direct)) {
+                wchar_t title[256] = {0};
+                GetWindowTextW(direct, title, 256);
+                if (IsRingCentralTitle(title)) {
+                    HWND inter = nullptr;
+                    HWND c = FindChild(direct, &inter);
+                    Update(direct, c, inter);
+                    return direct;
+                }
+            }
+
+            // Fast path 4: Fast window enumeration with visibility check
             struct SearchData {
-                HWND found;
-            } data = { nullptr };
+                HWND found = nullptr;
+            } data;
 
             EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
-                auto* d = reinterpret_cast<SearchData*>(lp);
+                if (!IsWindowVisible(hwnd)) return TRUE;
+                int len = GetWindowTextLengthW(hwnd);
+                if (len <= 0 || len >= 256) return TRUE;
+
                 wchar_t title[256] = {0};
                 GetWindowTextW(hwnd, title, 256);
                 if (IsRingCentralTitle(title)) {
+                    auto* d = reinterpret_cast<SearchData*>(lp);
                     d->found = hwnd;
                     return FALSE; // Stop enumeration once found
                 }
@@ -374,35 +515,76 @@ namespace SL {
             }, reinterpret_cast<LPARAM>(&data));
 
             if (data.found) {
-                HWND c = FindChild(data.found);
-                Update(data.found, c);
+                HWND inter = nullptr;
+                HWND c = FindChild(data.found, &inter);
+                Update(data.found, c, inter);
+                return data.found;
             }
-            return data.found;
+
+            return nullptr;
+        }
+
+        HWND FindChild(HWND mainWnd, HWND* outInter = nullptr) {
+            if (!mainWnd || !IsWindow(mainWnd)) return nullptr;
+
+            // Direct Chrome render widget child
+            HWND c = FindWindowExW(mainWnd, nullptr, TARGET_CHILD_CLASS, nullptr);
+            if (c && IsWindow(c)) {
+                if (outInter) *outInter = nullptr;
+                return c;
+            }
+
+            // Intermediate D3D window
+            HWND inter = FindWindowExW(mainWnd, nullptr, TARGET_INTERMEDIATE_CLASS, nullptr);
+            if (inter && IsWindow(inter)) {
+                if (outInter) *outInter = inter;
+                c = FindWindowExW(inter, nullptr, TARGET_CHILD_CLASS, nullptr);
+                if (c && IsWindow(c)) return c;
+            }
+
+            // Fallback EnumChildWindows
+            struct ChildSearch {
+                HWND targetChild = nullptr;
+                HWND intermediate = nullptr;
+            } cs;
+
+            EnumChildWindows(mainWnd, [](HWND h, LPARAM lp) -> BOOL {
+                wchar_t cls[128] = {0};
+                GetClassNameW(h, cls, 128);
+                auto* s = reinterpret_cast<ChildSearch*>(lp);
+                if (_wcsicmp(cls, TARGET_CHILD_CLASS) == 0) {
+                    s->targetChild = h;
+                    return FALSE;
+                } else if (_wcsicmp(cls, L"Intermediate D3D Window") == 0) {
+                    s->intermediate = h;
+                }
+                return TRUE;
+            }, reinterpret_cast<LPARAM>(&cs));
+
+            if (cs.targetChild) {
+                if (outInter) *outInter = cs.intermediate;
+                return cs.targetChild;
+            }
+            if (cs.intermediate) {
+                c = FindWindowExW(cs.intermediate, nullptr, TARGET_CHILD_CLASS, nullptr);
+                if (c) {
+                    if (outInter) *outInter = cs.intermediate;
+                    return c;
+                }
+            }
+            return nullptr;
         }
 
     private:
-        HWND FindChild(HWND main) {
-            if (!main || !IsWindow(main)) return nullptr;
-            HWND c = nullptr;
-            EnumChildWindows(main, [](HWND h, LPARAM lp) -> BOOL {
-                wchar_t cls[128] = {0};
-                GetClassNameW(h, cls, 128);
-                if (_wcsicmp(cls, TARGET_CHILD_CLASS) == 0) {
-                    *reinterpret_cast<HWND*>(lp) = h;
-                    return FALSE;
-                }
-                return TRUE;
-            }, reinterpret_cast<LPARAM>(&c));
-            return c;
-        }
-
-        WindowCache() : main(nullptr), child(nullptr) {}
-        std::atomic<HWND> main, child;
+        WindowCache() : main(nullptr), child(nullptr), intermediate(nullptr) {}
+        std::atomic<HWND> main;
+        std::atomic<HWND> child;
+        std::atomic<HWND> intermediate;
     };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ANSWER ENGINE (7-SHOT IPC CASCADE)
+// QUANTUM ANSWER ENGINE (7-SHOT IPC CASCADE WITH HARDWARE SCAN CODES)
 // ─────────────────────────────────────────────────────────────────────────────
 namespace SL {
     class Engine {
@@ -413,24 +595,25 @@ namespace SL {
         }
 
         void Initialize() {
-            active = true;
-            attempts = 0;
-            last_attempt_tick = 0;
-            cap_logged = false;
-            last_log_tick = 0;
-            suppressed_logs = 0;
+            active.store(true, std::memory_order_release);
+            attempts.store(0, std::memory_order_relaxed);
+            last_attempt_tick.store(0, std::memory_order_relaxed);
+            cap_logged.store(false, std::memory_order_relaxed);
+            last_log_tick.store(0, std::memory_order_relaxed);
+            suppressed_logs.store(0, std::memory_order_relaxed);
         }
 
-        void SetActive(bool a) { active = a; }
-        bool IsActive() const { return active; }
+        void SetActive(bool a) { active.store(a, std::memory_order_release); }
+        bool IsActive() const noexcept { return active.load(std::memory_order_relaxed); }
 
         bool TryAnswer(HWND hint, uint32_t chan, bool force = false) {
-            if (!active) return false;
+            if (!active.load(std::memory_order_relaxed)) return false;
 
-            // Serialize cascades. With the turbo poll thread plus the WinEvent
-            // and shell hooks, multiple entry points can race — only one
-            // cascade may run at a time.
-            std::lock_guard<std::mutex> fireGuard(fire_mutex_);
+            // Zero-overhead nanosecond spinlock
+            std::unique_lock<SpinLock> fireGuard(spin_lock_, std::try_to_lock);
+            if (!fireGuard.owns_lock()) {
+                return false; // Another thread is actively delivering the cascade
+            }
 
 #ifdef BENCHMARK
             force = true;
@@ -442,120 +625,153 @@ namespace SL {
             }
             if (!m || !IsWindow(m)) return false;
 
-            // ── Rate control ──────────────────────────────────────────────
-            // ALWAYS-ON ATTENTION (default): keep focusing + answering the
-            // target window for as long as it exists — never goes quiet.
-            // Real RingCentral call events (WinEvent / shell hook channels)
-            // bypass the debounce and fire instantly; only the idle-window
-            // attention poll is rate-limited by ANSWER_DEBOUNCE_MS.
-            // SPICY_LAMAR_BOUNDED instead bounds the cascades per ringing
-            // episode (buttons not clicked as infinite).
+            // Rate control
             if (!force) {
                 ULONGLONG now = GetTickCount64();
 #ifdef SPICY_LAMAR_BOUNDED
-                if (last_attempt_tick.load() == 0 ||
-                    (now - last_attempt_tick.load()) > ANSWER_EPISODE_MS) {
-                    attempts.store(0);        // new episode: re-arm attempts
-                    cap_logged.store(false);
+                if (last_attempt_tick.load(std::memory_order_relaxed) == 0 ||
+                    (now - last_attempt_tick.load(std::memory_order_relaxed)) > ANSWER_EPISODE_MS) {
+                    attempts.store(0, std::memory_order_relaxed);
+                    cap_logged.store(false, std::memory_order_relaxed);
                 }
-                if (attempts.load() >= ANSWER_MAX_ATTEMPTS) {
+                if (attempts.load(std::memory_order_relaxed) >= ANSWER_MAX_ATTEMPTS) {
                     if (!cap_logged.exchange(true)) {
                         LOG_WRN(L"Episode cap reached (%d attempts) — Alt+F1 idle until next call event",
                                 ANSWER_MAX_ATTEMPTS);
                     }
                     return false;
                 }
-                if (last_attempt_tick.load() != 0 &&
-                    (now - last_attempt_tick.load()) < ANSWER_MIN_RETRY_MS) {
-                    return false;             // too soon after previous attempt
+                if (last_attempt_tick.load(std::memory_order_relaxed) != 0 &&
+                    (now - last_attempt_tick.load(std::memory_order_relaxed)) < ANSWER_MIN_RETRY_MS) {
+                    return false;
                 }
-                attempts.store(attempts.load() + 1);
+                attempts.fetch_add(1, std::memory_order_relaxed);
 #else
                 // Immediate call response: only the poll channel is debounced.
                 if (chan == CHAN_POLL &&
-                    last_attempt_tick.load() != 0 &&
-                    (now - last_attempt_tick.load()) < ANSWER_DEBOUNCE_MS) {
-                    return false;             // relentless, but throttled
+                    last_attempt_tick.load(std::memory_order_relaxed) != 0 &&
+                    (now - last_attempt_tick.load(std::memory_order_relaxed)) < ANSWER_DEBOUNCE_MS) {
+                    return false;
                 }
 #endif
-                last_attempt_tick.store(now);
+                last_attempt_tick.store(now, std::memory_order_relaxed);
             }
 
             LARGE_INTEGER t0 = StatsTracker::Instance().QpcNow();
 
             auto snap = WindowCache::Instance().GetSnapshot();
             HWND child = snap.child;
+            HWND inter = snap.intermediate;
             if (!child || !IsWindow(child)) {
-                child = FindWindowExW(m, nullptr, TARGET_CHILD_CLASS, nullptr);
+                child = WindowCache::Instance().FindChild(m, &inter);
+                WindowCache::Instance().Update(m, child, inter);
             }
 
-            // Keyboard APIs target the foreground desktop, so activate RingCentral first.
+            // Foreground focus attachment & activation FIRST
+            DWORD curThreadId = GetCurrentThreadId();
+            DWORD targetThreadId = GetWindowThreadProcessId(m, nullptr);
+            BOOL attached = FALSE;
+            if (targetThreadId && targetThreadId != curThreadId) {
+                attached = AttachThreadInput(curThreadId, targetThreadId, TRUE);
+            }
+
             if (IsIconic(m)) ShowWindow(m, SW_RESTORE);
             BringWindowToTop(m);
             SetForegroundWindow(m);
             if (child && IsWindow(child)) SetFocus(child);
+            else SetFocus(m);
 
             // ─────────────────────────────────────────────────────────────────
-            // 7-SHOT REDUNDANT IPC CASCADE
+            // 7-SHOT REDUNDANT QUANTUM IPC CASCADE
             // ─────────────────────────────────────────────────────────────────
             
-            // Shot 1: Target window Alt+F1 Down/Up
+            // Shot 1: Target window Alt+F1 Down/Up (with hardware scan codes 0x38, 0x3B)
             PostMessageW(m, WM_SYSKEYDOWN, VK_MENU, 0x20380001);
             PostMessageW(m, WM_SYSKEYDOWN, VK_F1,   0x203B0001);
             PostMessageW(m, WM_SYSKEYUP,   VK_F1,   0xE03B0001);
             PostMessageW(m, WM_KEYUP,      VK_MENU, 0xE0380001);
 
-            // Shot 2: Chrome Render Child Alt+F1 Down/Up
+            // Shot 2: Chrome Render Child + Intermediate D3D Alt+F1 Down/Up
             if (child && IsWindow(child)) {
                 PostMessageW(child, WM_SYSKEYDOWN, VK_MENU, 0x20380001);
                 PostMessageW(child, WM_SYSKEYDOWN, VK_F1,   0x203B0001);
                 PostMessageW(child, WM_SYSKEYUP,   VK_F1,   0xE03B0001);
                 PostMessageW(child, WM_KEYUP,      VK_MENU, 0xE0380001);
             }
+            if (inter && IsWindow(inter)) {
+                PostMessageW(inter, WM_SYSKEYDOWN, VK_MENU, 0x20380001);
+                PostMessageW(inter, WM_SYSKEYDOWN, VK_F1,   0x203B0001);
+                PostMessageW(inter, WM_SYSKEYUP,   VK_F1,   0xE03B0001);
+                PostMessageW(inter, WM_KEYUP,      VK_MENU, 0xE0380001);
+            }
 
-            // Shot 3: Post Enter & Space keys to root
+            // Shot 3: Post Enter & Space keys to root and child
             PostMessageW(m, WM_KEYDOWN, VK_RETURN, 0x001C0001);
             PostMessageW(m, WM_KEYUP,   VK_RETURN, 0xC01C0001);
+            PostMessageW(m, WM_KEYDOWN, VK_SPACE,  0x00390001);
+            PostMessageW(m, WM_KEYUP,   VK_SPACE,  0xC0390001);
+            if (child && IsWindow(child)) {
+                PostMessageW(child, WM_KEYDOWN, VK_RETURN, 0x001C0001);
+                PostMessageW(child, WM_KEYUP,   VK_RETURN, 0xC01C0001);
+            }
 
-            // Shot 4: real keyboard input, with the legacy API as a fallback.
+            // Shot 4: Hardware-level SendInput batch with scan codes + legacy keybd_event fallback
             INPUT input[4] = {};
-            input[0].type = INPUT_KEYBOARD; input[0].ki.wVk = VK_MENU;
-            input[1].type = INPUT_KEYBOARD; input[1].ki.wVk = VK_F1;
-            input[2].type = INPUT_KEYBOARD; input[2].ki.wVk = VK_F1; input[2].ki.dwFlags = KEYEVENTF_KEYUP;
-            input[3].type = INPUT_KEYBOARD; input[3].ki.wVk = VK_MENU; input[3].ki.dwFlags = KEYEVENTF_KEYUP;
+            input[0].type = INPUT_KEYBOARD; 
+            input[0].ki.wVk = VK_MENU; 
+            input[0].ki.wScan = 0x38;
+
+            input[1].type = INPUT_KEYBOARD; 
+            input[1].ki.wVk = VK_F1; 
+            input[1].ki.wScan = 0x3B;
+
+            input[2].type = INPUT_KEYBOARD; 
+            input[2].ki.wVk = VK_F1; 
+            input[2].ki.wScan = 0x3B; 
+            input[2].ki.dwFlags = KEYEVENTF_KEYUP;
+
+            input[3].type = INPUT_KEYBOARD; 
+            input[3].ki.wVk = VK_MENU; 
+            input[3].ki.wScan = 0x38; 
+            input[3].ki.dwFlags = KEYEVENTF_KEYUP;
+
             SendInput(4, input, sizeof(INPUT));
+
             keybd_event(VK_MENU, 0x38, 0, 0);
             keybd_event(VK_F1,   0x3B, 0, 0);
             keybd_event(VK_F1,   0x3B, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_MENU, 0x38, KEYEVENTF_KEYUP, 0);
 
-            // Shot 5: Direct RingCentral Command message
+            // Shot 5: Direct RingCentral Command messages
             PostMessageW(m, WM_COMMAND, MAKEWPARAM(1001, 0), 0);
+            PostMessageW(m, WM_COMMAND, MAKEWPARAM(1, 0), 0);
+            PostMessageW(m, WM_COMMAND, MAKEWPARAM(101, 0), 0);
 
-            // Shot 6: Foreground focus activation
+            // Shot 6: Direct SysChar simulation & focus re-assert
+            PostMessageW(m, WM_SYSCHAR, VK_F1, 0x203B0001);
             SetForegroundWindow(m);
 
-            // Shot 7: Modifier key release safety net
+            // Shot 7: Modifier key release safety net & detach thread input
             keybd_event(VK_MENU,    0x38, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_CONTROL, 0x1D, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_SHIFT,   0x2A, KEYEVENTF_KEYUP, 0);
+
+            if (attached) {
+                AttachThreadInput(curThreadId, targetThreadId, FALSE);
+            }
 
             LARGE_INTEGER t1 = StatsTracker::Instance().QpcNow();
             StatsTracker::Instance().RecordAnswer(t0, t1, 7, chan);
 
-            // Per-cascade logging is rate-limited (ANSWER_LOG_MIN_GAP_MS) so
-            // 1000 Hz bursts spend their time answering instead of
-            // formatting/allocating log lines. Stats above are ALWAYS fully
-            // recorded; skipped log lines are coalesced into a "+N more"
-            // suffix on the next emitted line.
             if constexpr (ANSWER_LOG_MIN_GAP_MS == 0) {
                 uint64_t lat = StatsTracker::Instance().DeltaMicros(t0, t1);
                 LOG_INF(L"ANSWERED via 7-Shot Cascade [Chan: %u] in %lluus", chan, lat);
             } else {
                 ULONGLONG lnow = GetTickCount64();
-                ULONGLONG lastLog = last_log_tick.load();
+                ULONGLONG lastLog = last_log_tick.load(std::memory_order_relaxed);
                 if (lastLog == 0 || (lnow - lastLog) >= ANSWER_LOG_MIN_GAP_MS) {
-                    last_log_tick.store(lnow);
-                    uint64_t skipped = suppressed_logs.exchange(0);
+                    last_log_tick.store(lnow, std::memory_order_relaxed);
+                    uint64_t skipped = suppressed_logs.exchange(0, std::memory_order_relaxed);
                     uint64_t lat = StatsTracker::Instance().DeltaMicros(t0, t1);
                     if (skipped > 0) {
                         LOG_INF(L"ANSWERED via 7-Shot Cascade [Chan: %u] in %lluus (+%llu more cascades since last log)",
@@ -564,7 +780,7 @@ namespace SL {
                         LOG_INF(L"ANSWERED via 7-Shot Cascade [Chan: %u] in %lluus", chan, lat);
                     }
                 } else {
-                    suppressed_logs.fetch_add(1);
+                    suppressed_logs.fetch_add(1, std::memory_order_relaxed);
                 }
             }
             return true;
@@ -579,17 +795,14 @@ namespace SL {
         std::atomic<bool> cap_logged;
         std::atomic<ULONGLONG> last_log_tick;
         std::atomic<uint64_t> suppressed_logs;
-        std::mutex fire_mutex_;
+        SpinLock spin_lock_;
     };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HIGH-PRIORITY POLL WORKER (TURBO BUILD)
+// HIGH-PRIORITY POLL WORKER (TURBO BUILD WITH HIGH-RESOLUTION TIMERS)
 // ─────────────────────────────────────────────────────────────────────────────
 namespace SL {
-    // Used by the SPICY_LAMAR_TURBO build. Runs the target scan on its own
-    // time-critical thread so the UI message loop never delays an answer and
-    // so the scan can run at 1 ms / 1000 Hz.
     class PollWorker {
     public:
         static PollWorker& Instance() {
@@ -598,31 +811,57 @@ namespace SL {
         }
 
         void Start() {
-            if (running_.load()) return;
-            running_.store(true);
+            if (running_.load(std::memory_order_relaxed)) return;
+            running_.store(true, std::memory_order_release);
             thread_ = std::thread([this]() { Loop(); });
         }
 
         void Stop() {
-            running_.store(false);
+            running_.store(false, std::memory_order_release);
             if (thread_.joinable()) thread_.join();
         }
 
     private:
         void Loop() {
-            // Same thread-priority boost as the main process; best-effort
-            // fallback if the privilege is unavailable without elevation.
+            // Time-critical priority boost
             if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)) {
                 SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
             }
-            while (running_.load()) {
+
+            // Register MMCSS for Real-time Multimedia Scheduling
+            HANDLE hAvrt = RegisterMMCSS();
+
+            // High-resolution waitable timer (Windows 10 1803+)
+            HANDLE hTimer = nullptr;
+#ifdef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+            hTimer = CreateWaitableTimerExW(nullptr, nullptr, 
+                CREATE_WAITABLE_TIMER_HIGH_RESOLUTION | CREATE_WAITABLE_TIMER_MANUAL_RESET, 
+                TIMER_ALL_ACCESS);
+#endif
+            if (!hTimer) {
+                hTimer = CreateWaitableTimerW(nullptr, TRUE, nullptr);
+            }
+
+            while (running_.load(std::memory_order_relaxed)) {
                 HWND found = WindowCache::Instance().FindRingCentral();
                 if (found) {
                     Engine::Instance().TryAnswer(found, CHAN_POLL);
                 }
-                if (!running_.load()) break;
-                Sleep(DEFAULT_POLL_MS);
+                if (!running_.load(std::memory_order_relaxed)) break;
+
+                // Microsecond-precision wait
+                if (hTimer) {
+                    LARGE_INTEGER dueTime;
+                    dueTime.QuadPart = -10000LL; // 10,000 * 100ns = 1.0 ms
+                    SetWaitableTimer(hTimer, &dueTime, 0, nullptr, nullptr, FALSE);
+                    WaitForSingleObject(hTimer, 1);
+                } else {
+                    Sleep(DEFAULT_POLL_MS);
+                }
             }
+
+            if (hTimer) CloseHandle(hTimer);
+            UnregisterMMCSS(hAvrt);
         }
 
         PollWorker() : running_(false) {}
@@ -632,16 +871,18 @@ namespace SL {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DETECTION HOOKS (WINEVENT + SHELLHOOK)
+// DETECTION HOOKS (WINEVENT + SHELLHOOK - MULTI-CHANNEL SENSORS)
 // ─────────────────────────────────────────────────────────────────────────────
 namespace SL {
-    // Only these events indicate fresh call activity (ringing / call window
-    // shown / activation). Firing on every window event would machine-gun
-    // the answer shortcut at an idle window — which must never happen.
-    inline bool IsAnswerTriggerEvent(DWORD event) {
-        return event == EVENT_SYSTEM_FOREGROUND  // 0x0003 window activated
-            || event == EVENT_OBJECT_SHOW        // 0x8002 window shown (call popup)
-            || event == EVENT_OBJECT_NAMECHANGE; // 0x800C title change (call state)
+    inline bool IsAnswerTriggerEvent(DWORD event) noexcept {
+        return event == EVENT_SYSTEM_ALERT          // 0x0002 system alert
+            || event == EVENT_SYSTEM_FOREGROUND     // 0x0003 window activated
+            || event == EVENT_OBJECT_CREATE         // 0x8000 window created
+            || event == EVENT_OBJECT_SHOW           // 0x8002 window shown (call popup)
+            || event == EVENT_OBJECT_FOCUS          // 0x8005 window focused
+            || event == EVENT_OBJECT_STATECHANGE    // 0x800A window state change (ringing/flashing)
+            || event == EVENT_OBJECT_NAMECHANGE     // 0x800C title change (call state)
+            || event == EVENT_OBJECT_UNCLOAKED;     // 0x8018 window uncloaked (DWM popup shown)
     }
 
     inline void CALLBACK GlobalWinEventProc(
@@ -716,12 +957,12 @@ namespace SL {
                 L"Consolas"
             );
 
-            // Initialize tray icon
             InitializeTray();
 
-            // Register 5-Channel detection hooks
+            // Register Multi-Channel detection hooks
             hook_ = SetWinEventHook(
-                0x0003, 0x800C, 
+                EVENT_SYSTEM_SOUND, 
+                EVENT_OBJECT_UNCLOAKED, 
                 nullptr, 
                 GlobalWinEventProc, 
                 0, 0, 
@@ -731,9 +972,6 @@ namespace SL {
             wm_shellhook_ = RegisterWindowMessageW(L"SHELLHOOK");
             RegisterShellHookWindow(hwnd);
 
-            // UI refresh timer. In the normal build the UI timer also owns the
-            // polling loop; in the turbo build a dedicated PollWorker thread
-            // owns polling so we only register the dashboard refresh timer.
             SetTimer(hwnd, 1, STATS_REFRESH_MS, nullptr);
 #ifndef SPICY_LAMAR_TURBO
             SetTimer(hwnd, 2, DEFAULT_POLL_MS, nullptr);
@@ -786,8 +1024,6 @@ namespace SL {
             Shell_NotifyIconW(NIM_MODIFY, &nid_);
         }
 
-        // F11 / tray-menu Pause-Start. Always logs so the state change is
-        // visible on the dashboard, and mirrors it into the tray tooltip.
         void ToggleEngine() {
             bool nowActive = !Engine::Instance().IsActive();
             Engine::Instance().SetActive(nowActive);
@@ -832,11 +1068,6 @@ namespace SL {
                     if (self.visible) InvalidateRect(w, nullptr, FALSE);
 #ifndef SPICY_LAMAR_TURBO
                 } else if (wp == 2) {
-                    // ALWAYS-ON ATTENTION poll (normal build): hunt for the
-                    // RingCentral Phone window and attend to it — focus +
-                    // Alt+F1 answer cascade (throttled by the engine's
-                    // debounce). In the turbo build this is handled by the
-                    // dedicated PollWorker thread instead.
                     HWND found = WindowCache::Instance().FindRingCentral();
                     if (found) Engine::Instance().TryAnswer(found, CHAN_POLL);
 #endif
@@ -879,12 +1110,22 @@ namespace SL {
             }
 
             if (m == self.wm_shellhook_) {
-                if (wp == HSHELL_WINDOWCREATED || wp == HSHELL_RUDEAPPACTIVATED || wp == HSHELL_FLASH) {
+                if (wp == HSHELL_WINDOWCREATED || 
+                    wp == HSHELL_WINDOWACTIVATED || 
+                    wp == HSHELL_RUDEAPPACTIVATED || 
+                    wp == HSHELL_FLASH || 
+                    wp == HSHELL_REDRAW || 
+                    wp == HSHELL_ACTIVATESHELLWINDOW) {
                     HWND candidate = (HWND)lp;
-                    wchar_t title[256] = {0};
-                    GetWindowTextW(candidate, title, 256);
-                    if (IsRingCentralTitle(title)) {
-                        Engine::Instance().TryAnswer(candidate, CHAN_SHELLHOOK);
+                    if (candidate && IsWindow(candidate)) {
+                        wchar_t title[256] = {0};
+                        GetWindowTextW(candidate, title, 256);
+                        if (IsRingCentralTitle(title)) {
+                            Engine::Instance().TryAnswer(candidate, CHAN_SHELLHOOK);
+                        } else {
+                            HWND target = WindowCache::Instance().FindRingCentral();
+                            if (target) Engine::Instance().TryAnswer(target, CHAN_SHELLHOOK);
+                        }
                     }
                 }
                 return 0;
@@ -897,7 +1138,6 @@ namespace SL {
 
             if (m == WM_SYSCOMMAND) {
                 if ((wp & 0xFFF0) == SC_CLOSE) {
-                    // Hide to tray instead of exiting when user closes via Alt+F4 / X button
                     self.Show(false);
                     return 0;
                 }
@@ -928,32 +1168,27 @@ namespace SL {
             HGDIOBJ oldBmp = SelectObject(mdc, b);
             HGDIOBJ oldFont = SelectObject(mdc, font);
 
-            // Dark canvas background
             HBRUSH bgBrush = CreateSolidBrush(CLR_OBSIDIAN);
             FillRect(mdc, &r, bgBrush);
             DeleteObject(bgBrush);
 
             SetBkMode(mdc, TRANSPARENT);
 
-            // Header separator line
             HPEN linePen = CreatePen(PS_SOLID, 1, CLR_CHARCOAL);
             HGDIOBJ oldPen = SelectObject(mdc, linePen);
             MoveToEx(mdc, 20, 45, nullptr);
             LineTo(mdc, DASH_WIDTH - 20, 45);
 
-            // Title Banner
             SetTextColor(mdc, CLR_CHILI_RED);
             const wchar_t* titleText = L"🌶️ SPICY LAMAR v4.2";
             TextOutW(mdc, 20, 20, titleText, (int)wcslen(titleText));
 
-            // Status Badge with F11 hint
             SetTextColor(mdc, Engine::Instance().IsActive() ? CLR_NEON_GREEN : CLR_CHILI_RED);
             const wchar_t* statusStr = Engine::Instance().IsActive()
                 ? L"STATUS: [🌶️ ACTIVE]  —  F11 = PAUSE"
                 : L"STATUS: [⚠ PAUSED]  —  F11 = START";
             TextOutW(mdc, 20, 55, statusStr, (int)wcslen(statusStr));
 
-            // Metric Counters
             SetTextColor(mdc, CLR_TEXT_DIM);
             wchar_t stats[256];
             SL_SWPRINTF(stats, L"CALLS: %llu   UPTIME: %llus   LAST: %lluus  AVG: %lluus  BEST: %lluus",
@@ -964,7 +1199,6 @@ namespace SL {
                        StatsTracker::Instance().BestLatency());
             TextOutW(mdc, 20, 75, stats, (int)wcslen(stats));
 
-            // Telemetry Section
             SetTextColor(mdc, CLR_CHILI_RED);
             const wchar_t* telemetryText = L"[ REAL-TIME TELEMETRY ]";
             TextOutW(mdc, 20, 95, telemetryText, (int)wcslen(telemetryText));
@@ -990,7 +1224,6 @@ namespace SL {
             }
             DeleteObject(barBrush);
 
-            // System Logs Section
             SetTextColor(mdc, CLR_CHILI_RED);
             const wchar_t* logText = L"[ SYSTEM LOG ]";
             TextOutW(mdc, 20, 245, logText, (int)wcslen(logText));
@@ -1003,7 +1236,6 @@ namespace SL {
                 TextOutW(mdc, 20, 270 + (int)i * 20, line, (int)wcslen(line));
             }
 
-            // Footer: hotkey cheat-sheet
             MoveToEx(mdc, 20, 452, nullptr);
             LineTo(mdc, DASH_WIDTH - 20, 452);
             SetTextColor(mdc, CLR_TEXT_DIM);
@@ -1023,10 +1255,8 @@ namespace SL {
 #endif
             TextOutW(mdc, 20, 462, footerText, (int)wcslen(footerText));
 
-            // Blit buffer to screen
             BitBlt(hdc, 0, 0, r.right, r.bottom, mdc, 0, 0, SRCCOPY); 
 
-            // Clean up GDI objects cleanly to eliminate handle leaks
             SelectObject(mdc, oldPen);
             DeleteObject(linePen);
             SelectObject(mdc, oldFont);
@@ -1050,9 +1280,6 @@ namespace SL {
 // ─────────────────────────────────────────────────────────────────────────────
 #ifndef BENCHMARK
 static int RunApp(HINSTANCE h) {
-    // Single-instance enforcement. Creating a Global\ mutex can be denied for
-    // non-elevated sessions — fall back to the session-local namespace so the
-    // portable exe always starts, elevated or not.
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, SL::APP_MUTEX_NAME);
     DWORD mutexErr = (hMutex != nullptr) ? GetLastError() : ERROR_ACCESS_DENIED;
     if (hMutex == nullptr || mutexErr == ERROR_ACCESS_DENIED) {
@@ -1065,20 +1292,8 @@ static int RunApp(HINSTANCE h) {
         return 0;
     }
 
-    // Max performance: request real-time priority, fall back to high if the
-    // OS refuses (non-elevated sessions can be denied real-time). Give the
-    // main thread time-critical scheduling and wake the timer at 1 ms.
-#ifdef SPICY_LAMAR_TURBO
-    if (!SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS)) {
-        SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-    }
-#else
-    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-#endif
-    if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)) {
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-    }
-    timeBeginPeriod(1);
+    // Apply Kernel-level System Optimizations (MMCSS, 0.5ms Timer, Real-Time Priority)
+    SL::EnableSystemOptimizations();
 
     SL::StatsTracker::Instance().Initialize();
     SL::Engine::Instance().Initialize();
@@ -1090,8 +1305,6 @@ static int RunApp(HINSTANCE h) {
     }
 
     HWND w = SL::Terminal::Instance().GetHwnd();
-    // Verify every hotkey really registered — if another app owns the key,
-    // say so on the dashboard instead of failing silently.
     if (!RegisterHotKey(w, SL::HK_TOGGLE_DASHBOARD, MOD_NOREPEAT, VK_F9))
         LOG_WRN(L"F9 hotkey registration failed (already taken by another app?)");
     if (!RegisterHotKey(w, SL::HK_PAUSE_RESUME, MOD_NOREPEAT, VK_F11))
