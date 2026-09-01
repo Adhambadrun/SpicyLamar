@@ -7,9 +7,12 @@ shortcut (Alt+F1) through a redundant keyboard cascade.
 
 **MAX-PERFORMANCE (default portable build, `SPICY_LAMAR_TURBO`):** while a
 RingCentral Phone window exists, the engine scans 1000x/second on a
-time-critical worker thread and fires the Alt+F1 cascade every 50 ms, with
-real-time process priority — for a PC dedicated to this job. Build without
-`SPICY_LAMAR_TURBO` for the classic gentle profile (20 ms scan / 0.5 s).
+time-critical worker thread and fires the Alt+F1 cascade with a **1 ms floor**
+(up to 1000 cascades/second), with real-time process priority — for a PC
+dedicated to this job. Real call events bypass the polling debounce and fire
+the cascade instantly; per-cascade logging is coalesced at high rates (stats
+stay fully recorded). ⚠️ This is the most aggressive possible setting. Build
+without `SPICY_LAMAR_TURBO` for the classic gentle profile (20 ms scan / 0.5 s).
 **Bounded mode (optional build):** fires only on call activity, max 3 attempts
 per ringing episode — ≥ 100 ms apart / 2 s re-arm in turbo, or ≥ 1.5 s apart /
 10 s re-arm in the classic profile.

@@ -22,7 +22,15 @@ ANSWER BEHAVIOR (MAX-PERFORMANCE TURBO, default)
     dedicated time-critical poll thread.
   * Process runs at real-time priority (falls back to high if denied).
   * While it exists: focuses it (restores if minimized) + fires the
-    Alt+F1 cascade every 50 ms — max speed for a dedicated PC.
+    Alt+F1 cascade with a 1 ms floor — up to 1000 cascades/second,
+    max speed for a dedicated PC.
+  * Real call events (window shown/activated/title change) bypass the
+    polling debounce and fire the cascade instantly.
+  * Per-cascade logging is coalesced at high rates; stats stay fully
+    recorded.
+  * WARNING: this is the most aggressive possible setting. If
+    RingCentral or the PC misbehaves, rebuild with
+    ANSWER_DEBOUNCE_MS = 50 in src\main.cpp for a gentler profile.
   * F11 pauses/starts the engine at any time.
   * Classic profile (build without SPICY_LAMAR_TURBO): 50x/sec scan,
     one cascade every 0.5 s.
