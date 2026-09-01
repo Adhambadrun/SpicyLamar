@@ -39,12 +39,12 @@ namespace SpicyLamar
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
-            // Max-performance profile: real-time process priority (fall back to
-            // high if the OS denies it) and a 1 ms multimedia timer tick + 0.5 ms NT kernel timer.
+            // Max-performance profile: HIGH (not RealTime) process priority — a
+            // real-time process starves RingCentral's own input/renderer threads
+            // and makes the app lag — plus a 1 ms multimedia timer tick + 0.5 ms NT kernel timer.
             if (AnswerEngine.TURBO_MODE)
             {
-                try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.RealTime; }
-                catch { try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High; } catch { } }
+                try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High; } catch { }
                 try { Thread.CurrentThread.Priority = ThreadPriority.Highest; } catch { }
                 timeBeginPeriod(1);
                 try
@@ -218,7 +218,7 @@ namespace SpicyLamar
         public TerminalForm(AnswerEngine engine)
         {
             this.engine = engine;
-            this.Text = "Spicy Lamar v4.2";
+            this.Text = "Spicy Lamar v4.3";
             this.Size = new Size(780, 520);
             this.BackColor = Color.FromArgb(5, 5, 5);
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -292,7 +292,7 @@ namespace SpicyLamar
         {
             Graphics g = e.Graphics;
 
-            g.DrawString("🌶️ SPICY LAMAR v4.2", headerFont, chiliBrush, 20, 20);
+            g.DrawString("🌶️ SPICY LAMAR v4.3", headerFont, chiliBrush, 20, 20);
             g.DrawLine(linePen, 20, 45, 740, 45);
 
             string status = engine.Active ? "[🌶️ ACTIVE]  —  F11 = PAUSE" : "[⚠ PAUSED]  —  F11 = START";
@@ -426,7 +426,15 @@ namespace SpicyLamar
 
         public const bool BOUNDED_MODE = false;
         public const bool TURBO_MODE = true;
-        private const long DEBOUNCE_TICKS         = TURBO_MODE ? (1 * 10000)     : (500 * 10000);   // 1 ms / 500 ms in 100-ns ticks
+        // v4.3: turbo debounce raised 1 ms -> 100 ms. The old 1 ms floor fired the
+        // full cascade up to 1000x/sec, flooding RingCentral's message queue and
+        // stealing foreground focus nonstop — the app visibly lagged.
+        private const long DEBOUNCE_TICKS         = TURBO_MODE ? (100 * 10000)   : (500 * 10000);   // 100 ms / 500 ms in 100-ns ticks
+        // v4.3: coalescing floor for the "immediate" (real call-event) path, which
+        // previously had NO rate limit at all — WinEvent/shell hooks can fire
+        // hundreds of times per second and each one launched a full cascade.
+        // The first event after quiet still fires instantly.
+        private const long IMMEDIATE_MIN_GAP_TICKS = TURBO_MODE ? (50 * 10000) : (100 * 10000);     // 50 ms / 100 ms in 100-ns ticks
         private const long MIN_RETRY_TICKS        = TURBO_MODE ? (100 * 10000)   : (1500 * 10000);  // 100 ms / 1500 ms in 100-ns ticks
         private const long EPISODE_RESET_TICKS    = TURBO_MODE ? (2000 * 10000)  : (10000 * 10000); // 2000 ms / 10000 ms in 100-ns ticks
         private const int  MAX_ATTEMPTS_PER_EPISODE = 3;
@@ -458,7 +466,6 @@ namespace SpicyLamar
         private const uint KEYEVENTF_SCANCODE = 0x0008;
         private const uint WM_SYSKEYDOWN = 0x0104;
         private const uint WM_SYSKEYUP = 0x0105;
-        private const uint WM_SYSCHAR = 0x0106;
         private const uint WM_KEYDOWN = 0x0100;
         private const uint WM_KEYUP = 0x0101;
         private const uint WM_COMMAND = 0x0111;
@@ -505,11 +512,13 @@ namespace SpicyLamar
             const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
             hookHandle = SetWinEventHook(0x0001, 0x8018, IntPtr.Zero, dele, 0, 0,
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-            Log("Spicy Lamar v4.2 online. Hotkeys: F9 dashboard, F11 pause/start, F12 exit.");
+            Log("Spicy Lamar v4.3 online. Hotkeys: F9 dashboard, F11 pause/start, F12 exit.");
             Log("Engine initialized. Quantum call-event sensors active.");
 
-            // Cache-refresh poll: 1 ms in max-performance profile
-            pollTimer = new System.Threading.Timer(PollCheck, null, TURBO_MODE ? 1 : 100, TURBO_MODE ? 1 : 20);
+            // Cache-refresh poll: 25 ms in max-performance profile (v4.3: was 1 ms —
+            // real call events arrive instantly via the WinEvent/shell hooks, so a
+            // 1000 Hz fallback poll only burned CPU and hammered RingCentral)
+            pollTimer = new System.Threading.Timer(PollCheck, null, TURBO_MODE ? 25 : 100, TURBO_MODE ? 25 : 20);
         }
 
         private void PollCheck(object state)
@@ -685,7 +694,12 @@ namespace SpicyLamar
                 }
                 else
                 {
-                    if (!immediate && last != 0 && (now - last) < DEBOUNCE_TICKS)
+                    // v4.3: poll channel waits DEBOUNCE_TICKS between cascades;
+                    // immediate (real call-event) fires are coalesced at
+                    // IMMEDIATE_MIN_GAP_TICKS. The first event after quiet still
+                    // fires instantly (last == 0 or gap already elapsed).
+                    long minGap = immediate ? IMMEDIATE_MIN_GAP_TICKS : DEBOUNCE_TICKS;
+                    if (last != 0 && (now - last) < minGap)
                     {
                         return;
                     }
@@ -719,7 +733,7 @@ namespace SpicyLamar
                 else try { SetFocus(target); } catch { }
 
                 // ─────────────────────────────────────────────────────────────────
-                // 7-SHOT REDUNDANT QUANTUM IPC CASCADE
+                // 6-SHOT REDUNDANT QUANTUM IPC CASCADE
                 // ─────────────────────────────────────────────────────────────────
 
                 // Shot 1: Target window Alt+F1 Down/Up
@@ -773,11 +787,15 @@ namespace SpicyLamar
                 PostMessage(target, WM_COMMAND, (IntPtr)1,    IntPtr.Zero);
                 PostMessage(target, WM_COMMAND, (IntPtr)101,  IntPtr.Zero);
 
-                // Shot 6: Direct SysChar simulation & focus re-assert
-                PostMessage(target, WM_SYSCHAR, (IntPtr)VK_F1, (IntPtr)0x203B0001);
+                // Shot 6: Focus re-assert, modifier key release safety net & detach
+                // (v4.3: REMOVED the old PostMessage(WM_SYSCHAR, VK_F1) shot that lived
+                //  here. WM_SYSCHAR carries a CHARACTER code in wParam, not a virtual-key
+                //  code — and VK_F1 is numerically 0x70, ASCII 'p'. RingCentral's
+                //  Chromium text pipeline treated it as real typed input, so every
+                //  cascade literally typed 'p' — the 'pppppppp' spam in the app.)
                 try { SetForegroundWindow(target); } catch { }
 
-                // Shot 7: Modifier key release safety net & detach thread input
+                // Shot 6 (cont.): Modifier key release safety net & detach thread input
                 keybd_event(VK_MENU,    SCAN_MENU, KEYEVENTF_KEYUP, UIntPtr.Zero);
                 keybd_event(VK_CONTROL, 0x1D,      KEYEVENTF_KEYUP, UIntPtr.Zero);
                 keybd_event(VK_SHIFT,   0x2A,      KEYEVENTF_KEYUP, UIntPtr.Zero);
@@ -813,7 +831,7 @@ namespace SpicyLamar
 
                 if (ANSWER_LOG_MIN_GAP_TICKS == 0)
                 {
-                    Log(string.Format("ANSWERED via 7-Shot Cascade in {0} us", lat));
+                    Log(string.Format("ANSWERED via 6-Shot Cascade in {0} us", lat));
                 }
                 else
                 {
@@ -824,9 +842,9 @@ namespace SpicyLamar
                         long skipped = suppressedAnswerLogs;
                         suppressedAnswerLogs = 0;
                         if (skipped > 0)
-                            Log(string.Format("ANSWERED via 7-Shot Cascade in {0} us (+{1} more cascades since last log)", lat, skipped));
+                            Log(string.Format("ANSWERED via 6-Shot Cascade in {0} us (+{1} more cascades since last log)", lat, skipped));
                         else
-                            Log(string.Format("ANSWERED via 7-Shot Cascade in {0} us", lat));
+                            Log(string.Format("ANSWERED via 6-Shot Cascade in {0} us", lat));
                     }
                     else
                     {

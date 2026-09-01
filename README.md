@@ -11,24 +11,30 @@ dashboard, exe file name, and file properties.
 
 **MAX-PERFORMANCE TURBO (default build).** The portable C++ build is compiled
 with `SPICY_LAMAR_TURBO` for a PC dedicated to this job: while a RingCentral
-Phone window exists it scans the target 1000x/second on a dedicated
-time-critical poll thread, runs the whole process at real-time priority
-(fall-back to high if the OS denies it), utilizes 0.5 ms NT kernel timer
-resolution (`NtSetTimerResolution`), registers MMCSS Pro Audio scheduling,
-and fires the Alt+F1 answer cascade with a **1 ms floor** — delivering
-hardware-level keystrokes in **under 20 microseconds** (tens of thousands of
-times faster than a human blink). Real RingCentral call events (window shown /
-activated / title change / taskbar flash / DWM uncloak) bypass the polling
-debounce entirely and fire the cascade **instantly**; only the idle-window
-attention poll is rate-limited. Per-cascade logging is coalesced so 1000 Hz bursts
-spend their time answering, not formatting log lines (stats stay fully recorded).
+Phone window exists it scans the target 200x/second on a dedicated
+high-priority poll thread, runs the process at high priority, utilizes 0.5 ms
+NT kernel timer resolution (`NtSetTimerResolution`), registers MMCSS Pro Audio
+scheduling, and fires the Alt+F1 answer cascade with a **100 ms poll floor** —
+delivering hardware-level keystrokes in **microseconds** (thousands of times
+faster than a human blink). Real RingCentral call events (window shown /
+activated / title change / taskbar flash / DWM uncloak) skip the poll debounce
+and fire the cascade **instantly**; only back-to-back event storms are
+coalesced (50 ms absolute floor) so the first ring event is never delayed.
+Per-cascade logging is coalesced so bursts spend their time answering, not
+formatting log lines (stats stay fully recorded).
 A cached-window fast path with O(1) direct resolution avoids walking every
 window each tick. Press **F11** to pause/start the engine.
 
-> ⚠️ **This is the most aggressive possible setting.** If RingCentral or the
-> PC misbehaves, bump `ANSWER_DEBOUNCE_MS` from `1` to `50` in `src/main.cpp`
-> (or `DEBOUNCE_TICKS = 50 * 10000` in `SpicyLamar.cs`) for a slightly
-> gentler profile.
+> ✅ **v4.3 stability fix.** Earlier builds fired the cascade up to
+> 1000x/second at real-time priority, which made RingCentral lag — and a
+> `WM_SYSCHAR(VK_F1)` cascade step whose wParam (0x70) is ASCII `'p'` made
+> RingCentral literally type `pppppppp`. Both are fixed: the bogus SysChar
+> step is removed, the process runs at high (not real-time) priority, and
+> every fire channel is rate-limited.
+>
+> ⚠️ If RingCentral or the PC still misbehaves, raise `ANSWER_DEBOUNCE_MS`
+> further (e.g. `100` → `500`) in `src/main.cpp` (or `DEBOUNCE_TICKS = 500 *
+> 10000` in `SpicyLamar.cs`) for a gentler profile.
 
 Build without `-DSPICY_LAMAR_TURBO` to get the old gentle profile: 20 ms scan /
 one cascade every 0.5 s.
@@ -93,9 +99,9 @@ is the C++ monolith.
 ## Portability
 Zero external dependencies. Static linking. No installation or VC++
 Redistributables required. Runs on Windows 10 / 11 x64
-(x64-emulated ARM64 included). No admin rights needed — the turbo build asks
-the OS for real-time priority and automatically falls back to high priority if
-it is denied. For guaranteed real-time scheduling, run the exe as admin.
+(x64-emulated ARM64 included). No admin rights needed — as of v4.3 the turbo
+build runs at high (not real-time) priority, so it answers fast without
+starving RingCentral's own threads.
 
 ---
 🌶️⚡🔥 **SPICY LAMAR: THE QUANTUM EDITION** 🔥⚡🌶️

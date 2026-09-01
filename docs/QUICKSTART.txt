@@ -8,20 +8,21 @@ and presses the answer shortcut (Alt+F1) at max speed for a dedicated PC.
 Runs as a simple tray icon under its real name: Spicy Lamar.
 
 MAX-PERFORMANCE TURBO (default build, SPICY_LAMAR_TURBO):
-  * hunts for the RingCentral Phone window 1000x per second
-    on a dedicated time-critical poll thread
-  * real-time process priority (falls back to high if denied)
-  * fires the Alt+F1 cascade with a 1 ms floor — up to 1000
-    cascades per second while the window exists
-  * real call events (window shown/activated/title change) bypass
-    the polling debounce and fire the cascade INSTANTLY
+  * hunts for the RingCentral Phone window 200x per second (5 ms)
+    on a dedicated high-priority poll thread
+  * high process priority (v4.3: high, not real-time, so RC doesn't lag)
+  * fires the Alt+F1 cascade with a 100 ms poll floor
+  * real call events (window shown/activated/title change) skip the
+    polling debounce and fire the cascade INSTANTLY (storms are
+    coalesced at a 50 ms absolute floor)
   * per-cascade logging is coalesced at high rates so bursts spend
     their time answering (stats stay fully recorded)
   * cached-window fast path keeps each scan very cheap
   * F11 pauses/starts the engine at any time
-  * WARNING: this is the most aggressive possible setting — bump
-    ANSWER_DEBOUNCE_MS from 1 to 50 in src/main.cpp for a slightly
-    gentler profile
+  * v4.3 fix: removed the WM_SYSCHAR(VK_F1) cascade step whose wParam
+    (0x70 = ASCII 'p') made RingCentral type 'pppppppp'
+  * If RC still misbehaves: raise ANSWER_DEBOUNCE_MS (e.g. 100 -> 500)
+    in src/main.cpp for a gentler profile
 
 Classic profile (build without SPICY_LAMAR_TURBO):
   * 50x per second scan, one Alt+F1 cascade every 0.5 s

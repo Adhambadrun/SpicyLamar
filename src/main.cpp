@@ -1,5 +1,5 @@
 // ═════════════════════════════════════════════════════════════════════════════
-// SPICY LAMAR v4.2 // SINGLE-FILE MONOLITHIC SOURCE
+// SPICY LAMAR v4.3 // SINGLE-FILE MONOLITHIC SOURCE
 // TARGET PLATFORM: WINDOWS 10/11 x64 (PORTABLE, STATICALLY LINKED)
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -93,7 +93,7 @@ namespace SL {
     constexpr wchar_t APP_CLASS_NAME[]           = L"SpicyLamar_v4";
     constexpr wchar_t APP_MUTEX_NAME[]           = L"Global\\SpicyLamar_v4_Mutex";
     constexpr wchar_t APP_MUTEX_FALLBACK[]       = L"Local\\SpicyLamar_v4_Mutex";
-    constexpr wchar_t APP_VERSION[]              = L"Spicy Lamar v4.2";
+    constexpr wchar_t APP_VERSION[]              = L"Spicy Lamar v4.3";
     constexpr wchar_t TARGET_WINDOW_TITLE[]      = L"RingCentral Phone";
     constexpr wchar_t TARGET_CHILD_CLASS[]       = L"Chrome_RenderWidgetHostHWND";
     constexpr wchar_t TARGET_INTERMEDIATE_CLASS[]= L"Intermediate D3D Window";
@@ -123,10 +123,13 @@ namespace SL {
     // Performance & Telemetry Constants
 #ifdef SPICY_LAMAR_TURBO
     // MAX-PERFORMANCE build (SPICY_LAMAR_TURBO): tuned for extreme speed.
-    // Sub-millisecond target scanning on dedicated time-critical MMCSS thread,
-    // real-time process priority, 0.5 ms kernel timer, and 1 ms cascade floor.
-    // Real call events bypass debounce entirely and fire in microseconds.
-    constexpr DWORD   DEFAULT_POLL_MS      = 1;   // 1000 Hz target scan
+    // 5 ms target scanning on dedicated high-priority MMCSS thread, HIGH (not
+    // real-time) process priority, 0.5 ms kernel timer, 100 ms cascade floor.
+    // v4.3: real-time priority + a 1 ms floor flooded RingCentral (a Chromium
+    // app) with up to 1000 cascades/sec of window messages, SendInput and
+    // foreground steals, starving its input/renderer threads — the app lagged.
+    // Real call events still fire in microseconds; only storms are coalesced.
+    constexpr DWORD   DEFAULT_POLL_MS      = 5;   // 200 Hz target scan
     constexpr int     MAX_TELEMETRY_LOGS   = 50;
 #else
     // Default: 20 ms scan / 0.5 s heart-beat, gentle on shared machines.
@@ -136,8 +139,14 @@ namespace SL {
 
     // ── Answer engine rate control ───────────────────────────────────
 #ifdef SPICY_LAMAR_TURBO
-    // 1 ms cascade floor: up to 1000 cascades/sec while the window exists.
-    constexpr DWORD   ANSWER_DEBOUNCE_MS   = 1;
+    // v4.3: 100 ms cascade floor on the poll channel (max 10/sec) — the old
+    // 1 ms floor fired the full cascade up to 1000x/sec and choked RingCentral.
+    constexpr DWORD   ANSWER_DEBOUNCE_MS   = 100;
+    // Absolute floor between cascades from ANY channel, including "instant"
+    // WinEvent/shell-hook firings. WinEvents arrive hundreds of times per
+    // second; without this they each launched a full cascade. The first event
+    // after quiet still fires instantly (last tick is stale by definition).
+    constexpr DWORD   ANSWER_MIN_CASCADE_GAP_MS = 50;
     constexpr DWORD   ANSWER_MIN_RETRY_MS  = 100;
     constexpr int     ANSWER_MAX_ATTEMPTS  = 3;
     constexpr DWORD   ANSWER_EPISODE_MS    = 2000;
@@ -147,6 +156,7 @@ namespace SL {
     constexpr DWORD   ANSWER_LOG_MIN_GAP_MS = 250;
 #else
     constexpr DWORD   ANSWER_DEBOUNCE_MS   = 500;
+    constexpr DWORD   ANSWER_MIN_CASCADE_GAP_MS = 100;  // storm coalescing floor
     constexpr DWORD   ANSWER_MIN_RETRY_MS  = 1500;
     constexpr int     ANSWER_MAX_ATTEMPTS  = 3;
     constexpr DWORD   ANSWER_EPISODE_MS    = 10000;
@@ -279,11 +289,13 @@ namespace SL {
             }
         }
 
-        // 3. Process Real-Time Priority Class (fall back to High if non-elevated)
+        // 3. Process priority class.
 #ifdef SPICY_LAMAR_TURBO
-        if (!SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS)) {
-            SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-        }
+        // v4.3: HIGH, not REALTIME. A real-time-class process polling a Chromium
+        // app (RingCentral) starves RingCentral's own input/renderer threads and
+        // makes the whole app lag. High priority keeps answers fast without
+        // monopolizing the scheduler.
+        SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 #else
         SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 #endif
@@ -291,9 +303,10 @@ namespace SL {
         // 4. Disable dynamic priority decay so the process stays at peak priority
         SetProcessPriorityBoost(GetCurrentProcess(), FALSE);
 
-        // 5. Thread priority boost for main thread
-        if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)) {
-            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+        // 5. Thread priority boost for main thread (v4.3: HIGHEST, not
+        // TIME_CRITICAL — time-critical threads starve other apps)
+        if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST)) {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
         }
 
         // 6. Pre-allocate and lock working set to physical RAM (prevents page faults during answering)
@@ -584,7 +597,7 @@ namespace SL {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// QUANTUM ANSWER ENGINE (7-SHOT IPC CASCADE WITH HARDWARE SCAN CODES)
+// QUANTUM ANSWER ENGINE (6-SHOT IPC CASCADE WITH HARDWARE SCAN CODES)
 // ─────────────────────────────────────────────────────────────────────────────
 namespace SL {
     class Engine {
@@ -647,10 +660,15 @@ namespace SL {
                 }
                 attempts.fetch_add(1, std::memory_order_relaxed);
 #else
-                // Immediate call response: only the poll channel is debounced.
-                if (chan == CHAN_POLL &&
-                    last_attempt_tick.load(std::memory_order_relaxed) != 0 &&
-                    (now - last_attempt_tick.load(std::memory_order_relaxed)) < ANSWER_DEBOUNCE_MS) {
+                // v4.3: every channel is rate-limited. The poll channel waits
+                // ANSWER_DEBOUNCE_MS between cascades; "instant" event channels
+                // (WinEvent / shell hook) are coalesced at ANSWER_MIN_CASCADE_GAP_MS
+                // so a window-event storm cannot flood RingCentral with hundreds
+                // of cascades per second. The first event after quiet still fires
+                // in microseconds (last tick is stale, so no wait is added).
+                ULONGLONG lastTick = last_attempt_tick.load(std::memory_order_relaxed);
+                DWORD minGap = (chan == CHAN_POLL) ? ANSWER_DEBOUNCE_MS : ANSWER_MIN_CASCADE_GAP_MS;
+                if (lastTick != 0 && (now - lastTick) < minGap) {
                     return false;
                 }
 #endif
@@ -682,7 +700,7 @@ namespace SL {
             else SetFocus(m);
 
             // ─────────────────────────────────────────────────────────────────
-            // 7-SHOT REDUNDANT QUANTUM IPC CASCADE
+            // 6-SHOT REDUNDANT QUANTUM IPC CASCADE
             // ─────────────────────────────────────────────────────────────────
             
             // Shot 1: Target window Alt+F1 Down/Up (with hardware scan codes 0x38, 0x3B)
@@ -747,11 +765,15 @@ namespace SL {
             PostMessageW(m, WM_COMMAND, MAKEWPARAM(1, 0), 0);
             PostMessageW(m, WM_COMMAND, MAKEWPARAM(101, 0), 0);
 
-            // Shot 6: Direct SysChar simulation & focus re-assert
-            PostMessageW(m, WM_SYSCHAR, VK_F1, 0x203B0001);
+            // Shot 6: Focus re-assert, modifier key release safety net & detach
+            // (v4.3: REMOVED the old PostMessageW(WM_SYSCHAR, VK_F1) shot that lived
+            //  here. WM_SYSCHAR carries a CHARACTER code in wParam, not a virtual-key
+            //  code — and VK_F1 is numerically 0x70, ASCII 'p'. Chromium-based apps
+            //  like RingCentral processed it as real text input, so every cascade
+            //  literally typed 'p' into the app — the 'pppppppp' dial-pad/chat spam.)
             SetForegroundWindow(m);
 
-            // Shot 7: Modifier key release safety net & detach thread input
+            // Shot 6 (cont.): Modifier key release safety net & detach thread input
             keybd_event(VK_MENU,    0x38, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_CONTROL, 0x1D, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_SHIFT,   0x2A, KEYEVENTF_KEYUP, 0);
@@ -761,11 +783,11 @@ namespace SL {
             }
 
             LARGE_INTEGER t1 = StatsTracker::Instance().QpcNow();
-            StatsTracker::Instance().RecordAnswer(t0, t1, 7, chan);
+            StatsTracker::Instance().RecordAnswer(t0, t1, 6, chan);
 
             if constexpr (ANSWER_LOG_MIN_GAP_MS == 0) {
                 uint64_t lat = StatsTracker::Instance().DeltaMicros(t0, t1);
-                LOG_INF(L"ANSWERED via 7-Shot Cascade [Chan: %u] in %lluus", chan, lat);
+                LOG_INF(L"ANSWERED via 6-Shot Cascade [Chan: %u] in %lluus", chan, lat);
             } else {
                 ULONGLONG lnow = GetTickCount64();
                 ULONGLONG lastLog = last_log_tick.load(std::memory_order_relaxed);
@@ -774,10 +796,10 @@ namespace SL {
                     uint64_t skipped = suppressed_logs.exchange(0, std::memory_order_relaxed);
                     uint64_t lat = StatsTracker::Instance().DeltaMicros(t0, t1);
                     if (skipped > 0) {
-                        LOG_INF(L"ANSWERED via 7-Shot Cascade [Chan: %u] in %lluus (+%llu more cascades since last log)",
+                        LOG_INF(L"ANSWERED via 6-Shot Cascade [Chan: %u] in %lluus (+%llu more cascades since last log)",
                                 chan, lat, skipped);
                     } else {
-                        LOG_INF(L"ANSWERED via 7-Shot Cascade [Chan: %u] in %lluus", chan, lat);
+                        LOG_INF(L"ANSWERED via 6-Shot Cascade [Chan: %u] in %lluus", chan, lat);
                     }
                 } else {
                     suppressed_logs.fetch_add(1, std::memory_order_relaxed);
@@ -823,9 +845,10 @@ namespace SL {
 
     private:
         void Loop() {
-            // Time-critical priority boost
-            if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)) {
-                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+            // Elevated priority boost (v4.3: HIGHEST, not TIME_CRITICAL —
+            // a time-critical 1000 Hz loop starved RingCentral's own threads)
+            if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST)) {
+                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
             }
 
             // Register MMCSS for Real-time Multimedia Scheduling
@@ -849,12 +872,12 @@ namespace SL {
                 }
                 if (!running_.load(std::memory_order_relaxed)) break;
 
-                // Microsecond-precision wait
+                // Microsecond-precision wait (v4.3: honors DEFAULT_POLL_MS, 5 ms turbo)
                 if (hTimer) {
                     LARGE_INTEGER dueTime;
-                    dueTime.QuadPart = -10000LL; // 10,000 * 100ns = 1.0 ms
+                    dueTime.QuadPart = -(LONGLONG)DEFAULT_POLL_MS * 10000LL; // 100-ns units
                     SetWaitableTimer(hTimer, &dueTime, 0, nullptr, nullptr, FALSE);
-                    WaitForSingleObject(hTimer, 1);
+                    WaitForSingleObject(hTimer, 2);
                 } else {
                     Sleep(DEFAULT_POLL_MS);
                 }
@@ -1180,7 +1203,7 @@ namespace SL {
             LineTo(mdc, DASH_WIDTH - 20, 45);
 
             SetTextColor(mdc, CLR_CHILI_RED);
-            const wchar_t* titleText = L"🌶️ SPICY LAMAR v4.2";
+            const wchar_t* titleText = L"🌶️ SPICY LAMAR v4.3";
             TextOutW(mdc, 20, 20, titleText, (int)wcslen(titleText));
 
             SetTextColor(mdc, Engine::Instance().IsActive() ? CLR_NEON_GREEN : CLR_CHILI_RED);
@@ -1312,7 +1335,7 @@ static int RunApp(HINSTANCE h) {
     if (!RegisterHotKey(w, SL::HK_EMERGENCY_EXIT, MOD_NOREPEAT, VK_F12))
         LOG_WRN(L"F12 hotkey registration failed (already taken by another app?)");
 
-    LOG_INF(L"Spicy Lamar v4.2 online. Hotkeys: F9 dashboard, F11 pause/start, F12 exit.");
+    LOG_INF(L"Spicy Lamar v4.3 online. Hotkeys: F9 dashboard, F11 pause/start, F12 exit.");
 #ifdef SPICY_LAMAR_BOUNDED
     LOG_INF(L"Auto-answer armed (bounded): Alt+F1 cascade fires on call events (max %d per call).",
             SL::ANSWER_MAX_ATTEMPTS);
