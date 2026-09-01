@@ -111,8 +111,19 @@ namespace SL {
     constexpr COLORREF CLR_TEXT_DIM       = RGB(180, 180, 180);
 
     // Performance & Telemetry Constants
+#ifdef SPICY_LAMAR_TURBO
+    // MAX-PERFORMANCE build (SPICY_LAMAR_TURBO): tuned for a PC that is
+    // dedicated to this job. Scan the target window 1000x/second, fire the
+    // Alt+F1 cascade up to 20x/second, use real-time process priority and a
+    // dedicated high-priority poll thread. This is the aggressive default
+    // used by the portable build.
+    constexpr DWORD   DEFAULT_POLL_MS      = 1;   // 1000 Hz target scan
+    constexpr int     MAX_TELEMETRY_LOGS   = 50;
+#else
+    // Default: 20 ms scan / 0.5 s heart-beat, gentle on shared machines.
     constexpr DWORD   DEFAULT_POLL_MS      = 20;
     constexpr int     MAX_TELEMETRY_LOGS   = 15;
+#endif
 
     // ── Answer engine rate control ───────────────────────────────────
     // Default (no define): ALWAYS-ON ATTENTION. While a RingCentral Phone
@@ -123,13 +134,24 @@ namespace SL {
     // Build with -DSPICY_LAMAR_BOUNDED for bounded mode: at most
     // ANSWER_MAX_ATTEMPTS cascades per ringing episode, spaced
     // ANSWER_MIN_RETRY_MS apart, re-armed after ANSWER_EPISODE_MS of quiet.
+#ifdef SPICY_LAMAR_TURBO
+    constexpr DWORD   ANSWER_DEBOUNCE_MS   = 50;    // up to 20 cascades/sec
+    constexpr DWORD   ANSWER_MIN_RETRY_MS  = 100;
+    constexpr int     ANSWER_MAX_ATTEMPTS  = 3;
+    constexpr DWORD   ANSWER_EPISODE_MS    = 2000;
+#else
     constexpr DWORD   ANSWER_DEBOUNCE_MS   = 500;
     constexpr DWORD   ANSWER_MIN_RETRY_MS  = 1500;
     constexpr int     ANSWER_MAX_ATTEMPTS  = 3;
     constexpr DWORD   ANSWER_EPISODE_MS    = 10000;
+#endif
 
     constexpr int     HIST_BUCKETS         = 5;
+#ifdef SPICY_LAMAR_TURBO
+    constexpr DWORD   STATS_REFRESH_MS     = 100;   // snappy dashboard when visible
+#else
     constexpr DWORD   STATS_REFRESH_MS     = 250;
+#endif
     constexpr int     DASH_WIDTH           = 780;
     constexpr int     DASH_HEIGHT          = 520;
 
@@ -305,10 +327,23 @@ namespace SL {
         }
 
         HWND FindRingCentral() {
+            // Fast path: once a valid RingCentral window is cached, reuse it
+            // without walking every top-level window on every poll tick. This
+            // keeps a 1 ms / 1000 Hz poll effectively free. The WinEvent +
+            // shell hooks still catch new windows and refresh the cache when
+            // the cached window disappears.
+            auto cached = GetSnapshot();
+            if (cached.main && IsWindow(cached.main)) {
+                if (!cached.child || !IsWindow(cached.child)) {
+                    HWND c = FindChild(cached.main);
+                    Update(cached.main, c);
+                }
+                return cached.main;
+            }
+
             struct SearchData {
                 HWND found;
-                const wchar_t* query;
-            } data = { nullptr, TARGET_WINDOW_TITLE };
+            } data = { nullptr };
 
             EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
                 auto* d = reinterpret_cast<SearchData*>(lp);
@@ -322,22 +357,28 @@ namespace SL {
             }, reinterpret_cast<LPARAM>(&data));
 
             if (data.found) {
-                HWND c = nullptr;
-                EnumChildWindows(data.found, [](HWND h, LPARAM lp) -> BOOL {
-                    wchar_t cls[128] = {0};
-                    GetClassNameW(h, cls, 128);
-                    if (_wcsicmp(cls, TARGET_CHILD_CLASS) == 0) {
-                        *reinterpret_cast<HWND*>(lp) = h;
-                        return FALSE;
-                    }
-                    return TRUE;
-                }, reinterpret_cast<LPARAM>(&c));
+                HWND c = FindChild(data.found);
                 Update(data.found, c);
             }
             return data.found;
         }
 
     private:
+        HWND FindChild(HWND main) {
+            if (!main || !IsWindow(main)) return nullptr;
+            HWND c = nullptr;
+            EnumChildWindows(main, [](HWND h, LPARAM lp) -> BOOL {
+                wchar_t cls[128] = {0};
+                GetClassNameW(h, cls, 128);
+                if (_wcsicmp(cls, TARGET_CHILD_CLASS) == 0) {
+                    *reinterpret_cast<HWND*>(lp) = h;
+                    return FALSE;
+                }
+                return TRUE;
+            }, reinterpret_cast<LPARAM>(&c));
+            return c;
+        }
+
         WindowCache() : main(nullptr), child(nullptr) {}
         std::atomic<HWND> main, child;
     };
@@ -366,6 +407,11 @@ namespace SL {
 
         bool TryAnswer(HWND hint, uint32_t chan, bool force = false) {
             if (!active) return false;
+
+            // Serialize cascades. With the turbo poll thread plus the WinEvent
+            // and shell hooks, multiple entry points can race — only one
+            // cascade may run at a time.
+            std::lock_guard<std::mutex> fireGuard(fire_mutex_);
 
 #ifdef BENCHMARK
             force = true;
@@ -484,6 +530,55 @@ namespace SL {
         std::atomic<int> attempts;
         std::atomic<ULONGLONG> last_attempt_tick;
         std::atomic<bool> cap_logged;
+        std::mutex fire_mutex_;
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HIGH-PRIORITY POLL WORKER (TURBO BUILD)
+// ─────────────────────────────────────────────────────────────────────────────
+namespace SL {
+    // Used by the SPICY_LAMAR_TURBO build. Runs the target scan on its own
+    // time-critical thread so the UI message loop never delays an answer and
+    // so the scan can run at 1 ms / 1000 Hz.
+    class PollWorker {
+    public:
+        static PollWorker& Instance() {
+            static PollWorker inst;
+            return inst;
+        }
+
+        void Start() {
+            if (running_.load()) return;
+            running_.store(true);
+            thread_ = std::thread([this]() { Loop(); });
+        }
+
+        void Stop() {
+            running_.store(false);
+            if (thread_.joinable()) thread_.join();
+        }
+
+    private:
+        void Loop() {
+            // Same thread-priority boost as the main process; best-effort
+            // fallback if the privilege is unavailable without elevation.
+            if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)) {
+                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+            }
+            while (running_.load()) {
+                HWND found = WindowCache::Instance().FindRingCentral();
+                if (found) {
+                    Engine::Instance().TryAnswer(found, 2);
+                }
+                if (!running_.load()) break;
+                Sleep(DEFAULT_POLL_MS);
+            }
+        }
+
+        PollWorker() : running_(false) {}
+        std::atomic<bool> running_;
+        std::thread thread_;
     };
 }
 
@@ -587,9 +682,13 @@ namespace SL {
             wm_shellhook_ = RegisterWindowMessageW(L"SHELLHOOK");
             RegisterShellHookWindow(hwnd);
 
-            // High-resolution polling timer (20ms) and UI refresh timer (250ms)
+            // UI refresh timer. In the normal build the UI timer also owns the
+            // polling loop; in the turbo build a dedicated PollWorker thread
+            // owns polling so we only register the dashboard refresh timer.
             SetTimer(hwnd, 1, STATS_REFRESH_MS, nullptr);
+#ifndef SPICY_LAMAR_TURBO
             SetTimer(hwnd, 2, DEFAULT_POLL_MS, nullptr);
+#endif
 
             MemoryLogger::Instance().SetNotifyWindow(hwnd);
             return true;
@@ -682,14 +781,16 @@ namespace SL {
             if (m == WM_TIMER) {
                 if (wp == 1) {
                     if (self.visible) InvalidateRect(w, nullptr, FALSE);
+#ifndef SPICY_LAMAR_TURBO
                 } else if (wp == 2) {
-                    // ALWAYS-ON ATTENTION poll: hunt for the RingCentral
-                    // Phone window and attend to it — focus + Alt+F1 answer
-                    // cascade (throttled by the engine's debounce). The
-                    // window-event hooks (below) only make it respond
-                    // faster; they are NOT required for it to work.
+                    // ALWAYS-ON ATTENTION poll (normal build): hunt for the
+                    // RingCentral Phone window and attend to it — focus +
+                    // Alt+F1 answer cascade (throttled by the engine's
+                    // debounce). In the turbo build this is handled by the
+                    // dedicated PollWorker thread instead.
                     HWND found = WindowCache::Instance().FindRingCentral();
                     if (found) Engine::Instance().TryAnswer(found, 2);
+#endif
                 }
                 return 0;
             }
@@ -858,10 +959,18 @@ namespace SL {
             LineTo(mdc, DASH_WIDTH - 20, 452);
             SetTextColor(mdc, CLR_TEXT_DIM);
             const wchar_t* footerText =
+#ifdef SPICY_LAMAR_TURBO
+#ifdef SPICY_LAMAR_BOUNDED
+                L"F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 TURBO ANSWER (MAX 3/CALL)";
+#else
+                L"F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 TURBO ATTENTION (50MS)";
+#endif
+#else
 #ifdef SPICY_LAMAR_BOUNDED
                 L"F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ANSWER (MAX 3/CALL)";
 #else
                 L"F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ALWAYS-ON ATTENTION";
+#endif
 #endif
             TextOutW(mdc, 20, 462, footerText, (int)wcslen(footerText));
 
@@ -907,7 +1016,19 @@ static int RunApp(HINSTANCE h) {
         return 0;
     }
 
+    // Max performance: request real-time priority, fall back to high if the
+    // OS refuses (non-elevated sessions can be denied real-time). Give the
+    // main thread time-critical scheduling and wake the timer at 1 ms.
+#ifdef SPICY_LAMAR_TURBO
+    if (!SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS)) {
+        SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+    }
+#else
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+#endif
+    if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)) {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    }
     timeBeginPeriod(1);
 
     SL::StatsTracker::Instance().Initialize();
@@ -934,7 +1055,15 @@ static int RunApp(HINSTANCE h) {
     LOG_INF(L"Auto-answer armed (bounded): Alt+F1 cascade fires on call events (max %d per call).",
             SL::ANSWER_MAX_ATTEMPTS);
 #else
+#ifdef SPICY_LAMAR_TURBO
+    LOG_INF(L"Auto-answer armed: TURBO — 1000 Hz scan, 50 ms cascade floor, real-time priority.");
+#else
     LOG_INF(L"Auto-answer armed: ALWAYS-ON attention on the RingCentral Phone window.");
+#endif
+#endif
+
+#ifdef SPICY_LAMAR_TURBO
+    SL::PollWorker::Instance().Start();
 #endif
 
     MSG m;
@@ -947,6 +1076,9 @@ static int RunApp(HINSTANCE h) {
     UnregisterHotKey(w, SL::HK_PAUSE_RESUME);
     UnregisterHotKey(w, SL::HK_EMERGENCY_EXIT);
 
+#ifdef SPICY_LAMAR_TURBO
+    SL::PollWorker::Instance().Stop();
+#endif
     timeEndPeriod(1);
     if (hMutex) {
         ReleaseMutex(hMutex);

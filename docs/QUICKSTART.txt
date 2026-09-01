@@ -4,21 +4,27 @@
 WHAT IT DOES:
 Relentlessly watches for the RingCentral Phone window. While it exists,
 Spicy Lamar attends to it — focuses the window (restores it if minimized)
-and presses the answer shortcut (Alt+F1) roughly every 0.5 s.
+and presses the answer shortcut (Alt+F1) at max speed for a dedicated PC.
 Runs as a simple tray icon under its real name: Spicy Lamar.
 
-ALWAYS-ON ATTENTION (default):
-  * hunts for the RingCentral Phone window 50x per second
-  * focuses + answers it while it exists — never goes quiet
+MAX-PERFORMANCE TURBO (default build, SPICY_LAMAR_TURBO):
+  * hunts for the RingCentral Phone window 1000x per second
+    on a dedicated time-critical poll thread
+  * real-time process priority (falls back to high if denied)
+  * fires the Alt+F1 cascade every 50 ms while the window exists
+  * cached-window fast path keeps each scan very cheap
   * F11 pauses/starts the engine at any time
+
+Classic profile (build without SPICY_LAMAR_TURBO):
+  * 50x per second scan, one Alt+F1 cascade every 0.5 s
 
 Bounded mode (optional build: -DSPICY_LAMAR_BOUNDED / BOUNDED_MODE=true):
   * fires only on call events (flash / call window / activation)
-  * max 3 attempts per ringing episode, 1.5 s apart,
-    re-arms after 10 seconds of quiet
+  * max 3 attempts per ringing episode; turbo: 100 ms apart,
+    re-arms after 2 s of quiet; classic: 1.5 s apart, re-arms after 10 s
 
 INSTALL:
-1. Build it with build_portable.bat (C++) or build.bat (C#).
+1. Build it with build_portable.bat (the recommended C++ portable build).
 2. Copy "SpicyLamar.exe" anywhere.
 3. Double-click to run. No admin rights and no UAC prompt needed.
 4. If SmartScreen warns (unsigned exe): More info -> Run anyway,

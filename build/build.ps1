@@ -69,7 +69,7 @@ try {
     Write-Host "[3/3] Compiling and linking the monolith (cl.exe)..."
     $cxxFlags = @(
         '/nologo','/std:c++20','/O2','/Oi','/GL','/Gy','/MT','/utf-8',
-        '/DUNICODE','/D_UNICODE','/DSPICY_LAMAR_QUANTUM','/DNDEBUG','/EHsc',
+        '/DUNICODE','/D_UNICODE','/DSPICY_LAMAR_QUANTUM','/DSPICY_LAMAR_TURBO','/DNDEBUG','/EHsc',
         '/c', (Join-Path $repoRoot 'src\main.cpp'), '/Fo:' + (Join-Path $objDir 'main.obj')
     )
     & cl.exe @cxxFlags

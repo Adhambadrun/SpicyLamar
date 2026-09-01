@@ -11,11 +11,25 @@ namespace SpicyLamar
 {
     static class Program
     {
+        [DllImport("winmm.dll")]
+        static extern uint timeBeginPeriod(uint uMilliseconds);
+        [DllImport("winmm.dll")]
+        static extern uint timeEndPeriod(uint uMilliseconds);
+
         [STAThread]
         static void Main()
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+
+            // Max-performance profile: real-time process priority (fall back to
+            // high if the OS denies it) and a 1 ms multimedia timer tick.
+            if (AnswerEngine.TURBO_MODE)
+            {
+                try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.RealTime; }
+                catch { try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High; } catch { } }
+                timeBeginPeriod(1);
+            }
 
             // Single-instance enforcement. A Global\ mutex needs SeCreateGlobalPrivilege,
             // which non-elevated users lack - creating it then throws. Fall back to the
@@ -35,9 +49,11 @@ namespace SpicyLamar
             {
                 if (!createdNew)
                 {
+                    if (AnswerEngine.TURBO_MODE) timeEndPeriod(1);
                     return; // Another instance is already running
                 }
                 Application.Run(new DashboardContext());
+                if (AnswerEngine.TURBO_MODE) timeEndPeriod(1);
             }
         }
     }
@@ -178,8 +194,8 @@ namespace SpicyLamar
             this.Paint += TerminalForm_Paint;
 
             refreshTimer = new System.Windows.Forms.Timer();
-            refreshTimer.Interval = 250;
-            refreshTimer.Tick += delegate(object s, EventArgs e) { this.Invalidate(); };
+            refreshTimer.Interval = AnswerEngine.TURBO_MODE ? 100 : 250;
+            refreshTimer.Tick += delegate(object s, EventArgs e) { if (this.Visible) this.Invalidate(); };
             refreshTimer.Start();
         }
 
@@ -246,10 +262,15 @@ namespace SpicyLamar
 
             // Footer: hotkey cheat-sheet
             g.DrawLine(linePen, 20, 452, 740, 452);
-            g.DrawString(AnswerEngine.BOUNDED_MODE
-                    ? "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ANSWER (MAX 3/CALL)"
-                    : "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ALWAYS-ON ATTENTION",
-                monoFont, dimBrush, 20, 462);
+            string footer =
+                AnswerEngine.BOUNDED_MODE
+                    ? (AnswerEngine.TURBO_MODE
+                        ? "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 TURBO ANSWER (MAX 3/CALL)"
+                        : "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ANSWER (MAX 3/CALL)")
+                    : (AnswerEngine.TURBO_MODE
+                        ? "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 TURBO ATTENTION (50MS)"
+                        : "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ALWAYS-ON ATTENTION");
+            g.DrawString(footer, monoFont, dimBrush, 20, 462);
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -343,9 +364,13 @@ namespace SpicyLamar
         // ringing episode, spaced MIN_RETRY_TICKS apart, re-armed after
         // EPISODE_RESET_TICKS of quiet (buttons not clicked as infinite).
         public const bool BOUNDED_MODE = false;
-        private const long DEBOUNCE_TICKS         = 500 * 10000;    // 500 ms in 100-ns ticks
-        private const long MIN_RETRY_TICKS        = 1500 * 10000;   // 1500 ms in 100-ns ticks
-        private const long EPISODE_RESET_TICKS    = 10000 * 10000;  // 10000 ms in 100-ns ticks
+        // Max-performance profile (default for a PC dedicated to this job).
+        // Fan out to the classic 20 ms scan / 0.5 s heart-beat by setting
+        // this to false and rebuilding.
+        public const bool TURBO_MODE = true;
+        private const long DEBOUNCE_TICKS         = TURBO_MODE ? (50 * 10000)    : (500 * 10000);   // 50 ms / 500 ms in 100-ns ticks
+        private const long MIN_RETRY_TICKS        = TURBO_MODE ? (100 * 10000)   : (1500 * 10000);  // 100 ms / 1500 ms in 100-ns ticks
+        private const long EPISODE_RESET_TICKS    = TURBO_MODE ? (2000 * 10000)  : (10000 * 10000); // 2000 ms / 10000 ms in 100-ns ticks
         private const int  MAX_ATTEMPTS_PER_EPISODE = 3;
         private int episodeAttempts = 0;
         private bool capLogged = false;
@@ -411,10 +436,10 @@ namespace SpicyLamar
             Log("Spicy Lamar v4.2 online. Hotkeys: F9 dashboard, F11 pause/start, F12 exit.");
             Log("Engine initialized. Call-event sensors active.");
 
-            // Cache-refresh poll: 20ms interval matching C++ version.
-            // NEVER fires the cascade itself — an idle window must not be
-            // re-answered forever.
-            pollTimer = new System.Threading.Timer(PollCheck, null, 100, 20);
+            // Cache-refresh poll: 1 ms in the max-performance profile
+            // (20 ms in the classic profile). NEVER fires the cascade itself —
+            // an idle window must not be re-answered forever.
+            pollTimer = new System.Threading.Timer(PollCheck, null, TURBO_MODE ? 1 : 100, TURBO_MODE ? 1 : 20);
         }
 
         private void PollCheck(object state)
@@ -439,6 +464,15 @@ namespace SpicyLamar
 
         private IntPtr FindRingCentralWindow()
         {
+            // Fast path: reuse a still-valid cached target so the 1 ms scan
+            // doesn't walk every top-level window on every tick. The WinEvent
+            // hook catches new windows and refreshes the cache when the cached
+            // window disappears.
+            if (cachedTarget != IntPtr.Zero && IsWindow(cachedTarget))
+            {
+                return cachedTarget;
+            }
+
             IntPtr found = IntPtr.Zero;
             EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
             {
@@ -483,6 +517,11 @@ namespace SpicyLamar
 
         public void TryFire(IntPtr target)
         {
+            // One cascade at a time: the 1 ms poll timer and the WinEvent hook
+            // can race on different threads.
+            if (!Monitor.TryEnter(fireLock, 0)) return;
+            try
+            {
             if (!Active) return;
 
             // Fall back to the cached target window (parity with the C++ version)
@@ -619,6 +658,8 @@ namespace SpicyLamar
                 else histogram[4]++;
             }
             Log(string.Format("ANSWERED via 7-Shot Cascade in {0} us", lat));
+            }
+            finally { Monitor.Exit(fireLock); }
         }
 
         private void Log(string msg)

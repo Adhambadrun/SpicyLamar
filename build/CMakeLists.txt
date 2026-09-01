@@ -20,6 +20,7 @@ target_compile_definitions(SpicyLamarAutoAnswer PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
     SPICY_LAMAR_QUANTUM
+    SPICY_LAMAR_TURBO
 )
 
 target_compile_options(SpicyLamarAutoAnswer PRIVATE
