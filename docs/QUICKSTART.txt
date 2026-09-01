@@ -43,6 +43,8 @@ DASHBOARD:
 Right-click tray icon -> "Open Dashboard (F9)".
 
 HOTKEYS:
+F8  : Self-test - verify the Alt+F1 answer path (works while paused,
+      stats unchanged). v4.4 answer key is Alt+F1 ONLY (Alt+A never sent).
 F9  : Show/Hide Dashboard
 F11 : Pause/Start  (also in the tray menu, tooltip, and dashboard status)
 F12 : Exit

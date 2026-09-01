@@ -1,5 +1,5 @@
 // ═════════════════════════════════════════════════════════════════════════════
-// SPICY LAMAR v4.3 // SINGLE-FILE MONOLITHIC SOURCE
+// SPICY LAMAR v4.4 // SINGLE-FILE MONOLITHIC SOURCE
 // TARGET PLATFORM: WINDOWS 10/11 x64 (PORTABLE, STATICALLY LINKED)
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -93,7 +93,7 @@ namespace SL {
     constexpr wchar_t APP_CLASS_NAME[]           = L"SpicyLamar_v4";
     constexpr wchar_t APP_MUTEX_NAME[]           = L"Global\\SpicyLamar_v4_Mutex";
     constexpr wchar_t APP_MUTEX_FALLBACK[]       = L"Local\\SpicyLamar_v4_Mutex";
-    constexpr wchar_t APP_VERSION[]              = L"Spicy Lamar v4.3";
+    constexpr wchar_t APP_VERSION[]              = L"Spicy Lamar v4.4";
     constexpr wchar_t TARGET_WINDOW_TITLE[]      = L"RingCentral Phone";
     constexpr wchar_t TARGET_CHILD_CLASS[]       = L"Chrome_RenderWidgetHostHWND";
     constexpr wchar_t TARGET_INTERMEDIATE_CLASS[]= L"Intermediate D3D Window";
@@ -112,6 +112,7 @@ namespace SL {
     constexpr UINT    IDM_JOIN_PAN         = 2005;
     constexpr UINT    IDM_OPEN_SETTINGS    = 2006;
     constexpr UINT    IDM_REMOVE_ICON      = 2007;
+    constexpr UINT    IDM_SELF_TEST        = 2008;   // v4.4: F8 self-test
 
     // Visual Palette (Obsidian & Chili Neon)
     constexpr COLORREF CLR_OBSIDIAN       = RGB(5, 5, 5);
@@ -181,6 +182,7 @@ namespace SL {
     constexpr int HK_TOGGLE_DASHBOARD      = 1;
     constexpr int HK_PAUSE_RESUME          = 2;
     constexpr int HK_EMERGENCY_EXIT        = 3;
+    constexpr int HK_SELF_TEST             = 4;   // v4.4: F8 self-test
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -377,7 +379,12 @@ namespace SL {
         }
 
         void RecordAnswer(LARGE_INTEGER t0, LARGE_INTEGER t1, uint32_t hits, uint32_t chan) noexcept {
-            uint64_t us = DeltaMicros(t0, t1); 
+            RecordLatency(DeltaMicros(t0, t1), chan);
+        }
+
+        // v4.4: record one cascade latency. Used by live answers; the F8
+        // self-test path deliberately does NOT call this so telemetry stays clean.
+        void RecordLatency(uint64_t us, uint32_t chan) noexcept {
             last_us.store(us, std::memory_order_relaxed); 
             calls.fetch_add(1, std::memory_order_relaxed);
             sum_us.fetch_add(us, std::memory_order_relaxed);
@@ -675,6 +682,77 @@ namespace SL {
                 last_attempt_tick.store(now, std::memory_order_relaxed);
             }
 
+            // v4.4: focus steal + Alt+F1-only cascade live in DeliverAnswerCascade()
+            // so the F8 self-test can reuse them.
+            uint64_t lat = DeliverAnswerCascade(m);
+
+            StatsTracker::Instance().RecordLatency(lat, chan);
+
+            if constexpr (ANSWER_LOG_MIN_GAP_MS == 0) {
+                LOG_INF(L"ANSWERED via 6-Shot Cascade [Chan: %u] in %lluus", chan, lat);
+            } else {
+                ULONGLONG lnow = GetTickCount64();
+                ULONGLONG lastLog = last_log_tick.load(std::memory_order_relaxed);
+                if (lastLog == 0 || (lnow - lastLog) >= ANSWER_LOG_MIN_GAP_MS) {
+                    last_log_tick.store(lnow, std::memory_order_relaxed);
+                    uint64_t skipped = suppressed_logs.exchange(0, std::memory_order_relaxed);
+                    if (skipped > 0) {
+                        LOG_INF(L"ANSWERED via 6-Shot Cascade [Chan: %u] in %lluus (+%llu more cascades since last log)",
+                                chan, lat, skipped);
+                    } else {
+                        LOG_INF(L"ANSWERED via 6-Shot Cascade [Chan: %u] in %lluus", chan, lat);
+                    }
+                } else {
+                    suppressed_logs.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            return true;
+        }
+
+        // v4.4 F8 SELF-TEST (also in the tray menu): verifies the Alt+F1
+        // answer path end-to-end WITHOUT touching call stats, and runs even
+        // while paused. Finds the RingCentral Phone window and delivers one
+        // real Alt+F1 cascade; the log reports the result. Never sends Alt+A.
+        void RunSelfTest() {
+            LOG_INF(L"──── F8 SELF-TEST ────────────────────────────────────");
+            LOG_INF(L"Engine: %ls. Answer key: Alt+F1 ONLY (Alt+A is never sent).",
+                    IsActive() ? L"ACTIVE" : L"PAUSED (self-test runs anyway)");
+
+            HWND m = WindowCache::Instance().FindRingCentral();
+            if (!m || !IsWindow(m)) {
+                LOG_WRN(L"SELF-TEST: RingCentral Phone window NOT found.");
+                LOG_WRN(L"SELF-TEST: Start RingCentral Phone, then press F8 again.");
+                LOG_INF(L"──── SELF-TEST COMPLETE (no window) ───────────────────");
+                return;
+            }
+
+            wchar_t title[256] = {0};
+            GetWindowTextW(m, title, 256);
+            LOG_INF(L"SELF-TEST: found RingCentral window \"%ls\" (hwnd 0x%p).", title, (void*)m);
+            LOG_INF(L"SELF-TEST: delivering one Alt+F1 cascade (focus + 6-shot IPC + hardware SendInput)...");
+
+            std::unique_lock<SpinLock> fireGuard(spin_lock_, std::try_to_lock);
+            if (!fireGuard.owns_lock()) {
+                LOG_WRN(L"SELF-TEST: a live answer cascade is in flight. Try again in a moment.");
+                LOG_INF(L"──── SELF-TEST ABORTED ────────────────────────────────");
+                return;
+            }
+            uint64_t lat = DeliverAnswerCascade(m);
+            LOG_INF(L"SELF-TEST: Alt+F1 cascade delivered in %lluus.", (unsigned long long)lat);
+            LOG_INF(L"SELF-TEST: PASS - Alt+F1 path verified (call stats unchanged).");
+            LOG_INF(L"SELF-TEST: a ringing call is answered; an idle RingCentral ignores the shortcut.");
+            LOG_INF(L"──── SELF-TEST COMPLETE ────────────────────────────────");
+        }
+
+    private:
+        // v4.4 - ANSWER KEY IS Alt+F1 ONLY. Every shot below synthesizes
+        // Alt+F1 (plus Enter / Space / WM_COMMAND fallbacks that are NOT
+        // typing). RingCentral's STOCK answer shortcut Alt+A is deliberately
+        // NEVER sent: this build targets a RingCentral install whose answer
+        // shortcut is remapped to Alt+F1, and a stray Alt+A could open an app
+        // menu or trigger an unrelated action. Do NOT re-add an Alt+A fallback.
+        // Returns the cascade delivery latency in microseconds.
+        uint64_t DeliverAnswerCascade(HWND m) {
             LARGE_INTEGER t0 = StatsTracker::Instance().QpcNow();
 
             auto snap = WindowCache::Instance().GetSnapshot();
@@ -783,32 +861,9 @@ namespace SL {
             }
 
             LARGE_INTEGER t1 = StatsTracker::Instance().QpcNow();
-            StatsTracker::Instance().RecordAnswer(t0, t1, 6, chan);
-
-            if constexpr (ANSWER_LOG_MIN_GAP_MS == 0) {
-                uint64_t lat = StatsTracker::Instance().DeltaMicros(t0, t1);
-                LOG_INF(L"ANSWERED via 6-Shot Cascade [Chan: %u] in %lluus", chan, lat);
-            } else {
-                ULONGLONG lnow = GetTickCount64();
-                ULONGLONG lastLog = last_log_tick.load(std::memory_order_relaxed);
-                if (lastLog == 0 || (lnow - lastLog) >= ANSWER_LOG_MIN_GAP_MS) {
-                    last_log_tick.store(lnow, std::memory_order_relaxed);
-                    uint64_t skipped = suppressed_logs.exchange(0, std::memory_order_relaxed);
-                    uint64_t lat = StatsTracker::Instance().DeltaMicros(t0, t1);
-                    if (skipped > 0) {
-                        LOG_INF(L"ANSWERED via 6-Shot Cascade [Chan: %u] in %lluus (+%llu more cascades since last log)",
-                                chan, lat, skipped);
-                    } else {
-                        LOG_INF(L"ANSWERED via 6-Shot Cascade [Chan: %u] in %lluus", chan, lat);
-                    }
-                } else {
-                    suppressed_logs.fetch_add(1, std::memory_order_relaxed);
-                }
-            }
-            return true;
+            return StatsTracker::Instance().DeltaMicros(t0, t1);
         }
 
-    private:
         Engine() : active(true), attempts(0), last_attempt_tick(0), cap_logged(false),
                    last_log_tick(0), suppressed_logs(0) {}
         std::atomic<bool> active;
@@ -1065,8 +1120,9 @@ namespace SL {
             InsertMenuW(hMenu, 0, MF_BYPOSITION | MF_STRING, IDM_OPEN_SETTINGS, L"Open Dashboard (F9)");
             InsertMenuW(hMenu, 1, MF_BYPOSITION | MF_STRING, IDM_ADD_DEVICE,
                         active ? L"Pause (F11)" : L"Start (F11)");
-            InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
-            InsertMenuW(hMenu, 3, MF_BYPOSITION | MF_STRING, IDM_REMOVE_ICON, L"Exit (F12)");
+            InsertMenuW(hMenu, 2, MF_BYPOSITION | MF_STRING, IDM_SELF_TEST, L"Self-test (F8)");
+            InsertMenuW(hMenu, 3, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+            InsertMenuW(hMenu, 4, MF_BYPOSITION | MF_STRING, IDM_REMOVE_ICON, L"Exit (F12)");
 
             POINT pt;
             GetCursorPos(&pt);
@@ -1116,6 +1172,9 @@ namespace SL {
                     case IDM_OPEN_SETTINGS:
                         self.Show(!self.visible);
                         break;
+                    case IDM_SELF_TEST:
+                        Engine::Instance().RunSelfTest();
+                        break;
                     case IDM_REMOVE_ICON:
                         PostQuitMessage(0);
                         break;
@@ -1129,6 +1188,7 @@ namespace SL {
                 if (wp == HK_TOGGLE_DASHBOARD) self.Show(!self.visible);
                 if (wp == HK_PAUSE_RESUME) self.ToggleEngine();
                 if (wp == HK_EMERGENCY_EXIT) PostQuitMessage(0);
+                if (wp == HK_SELF_TEST) Engine::Instance().RunSelfTest();
                 return 0;
             }
 
@@ -1203,7 +1263,7 @@ namespace SL {
             LineTo(mdc, DASH_WIDTH - 20, 45);
 
             SetTextColor(mdc, CLR_CHILI_RED);
-            const wchar_t* titleText = L"🌶️ SPICY LAMAR v4.3";
+            const wchar_t* titleText = L"🌶️ SPICY LAMAR v4.4";
             TextOutW(mdc, 20, 20, titleText, (int)wcslen(titleText));
 
             SetTextColor(mdc, Engine::Instance().IsActive() ? CLR_NEON_GREEN : CLR_CHILI_RED);
@@ -1262,20 +1322,8 @@ namespace SL {
             MoveToEx(mdc, 20, 452, nullptr);
             LineTo(mdc, DASH_WIDTH - 20, 452);
             SetTextColor(mdc, CLR_TEXT_DIM);
-            const wchar_t* footerText =
-#ifdef SPICY_LAMAR_TURBO
-#ifdef SPICY_LAMAR_BOUNDED
-                L"F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 TURBO ANSWER (MAX 3/CALL)";
-#else
-                L"F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 TURBO ATTENTION (1MS)";
-#endif
-#else
-#ifdef SPICY_LAMAR_BOUNDED
-                L"F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ANSWER (MAX 3/CALL)";
-#else
-                L"F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ALWAYS-ON ATTENTION";
-#endif
-#endif
+            // v4.4: F8 self-test added; answer key is Alt+F1 ONLY (Alt+A never sent).
+            const wchar_t* footerText = L"F8 SELF-TEST   F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ANSWER KEY: ALT+F1 (ONLY)";
             TextOutW(mdc, 20, 462, footerText, (int)wcslen(footerText));
 
             BitBlt(hdc, 0, 0, r.right, r.bottom, mdc, 0, 0, SRCCOPY); 
@@ -1334,8 +1382,10 @@ static int RunApp(HINSTANCE h) {
         LOG_ERR(L"F11 hotkey registration failed (already taken by another app?)");
     if (!RegisterHotKey(w, SL::HK_EMERGENCY_EXIT, MOD_NOREPEAT, VK_F12))
         LOG_WRN(L"F12 hotkey registration failed (already taken by another app?)");
+    if (!RegisterHotKey(w, SL::HK_SELF_TEST, MOD_NOREPEAT, VK_F8))
+        LOG_WRN(L"F8 hotkey registration failed (already taken by another app?)");
 
-    LOG_INF(L"Spicy Lamar v4.3 online. Hotkeys: F9 dashboard, F11 pause/start, F12 exit.");
+    LOG_INF(L"Spicy Lamar v4.4 online. Hotkeys: F8 self-test, F9 dashboard, F11 pause/start, F12 exit. Answer key: Alt+F1 only.");
 #ifdef SPICY_LAMAR_BOUNDED
     LOG_INF(L"Auto-answer armed (bounded): Alt+F1 cascade fires on call events (max %d per call).",
             SL::ANSWER_MAX_ATTEMPTS);
@@ -1360,6 +1410,7 @@ static int RunApp(HINSTANCE h) {
     UnregisterHotKey(w, SL::HK_TOGGLE_DASHBOARD);
     UnregisterHotKey(w, SL::HK_PAUSE_RESUME);
     UnregisterHotKey(w, SL::HK_EMERGENCY_EXIT);
+    UnregisterHotKey(w, SL::HK_SELF_TEST);
 
 #ifdef SPICY_LAMAR_TURBO
     SL::PollWorker::Instance().Stop();

@@ -125,6 +125,7 @@ namespace SpicyLamar
             HotKeyManager.RegisterHotKey(dashboard.Handle, 1, (uint)HotKeyManager.KeyModifiers.NoRepeat, (uint)Keys.F9);  // Toggle Dashboard
             HotKeyManager.RegisterHotKey(dashboard.Handle, 2, (uint)HotKeyManager.KeyModifiers.NoRepeat, (uint)Keys.F11); // Pause / Start
             HotKeyManager.RegisterHotKey(dashboard.Handle, 3, (uint)HotKeyManager.KeyModifiers.NoRepeat, (uint)Keys.F12); // Exit
+            HotKeyManager.RegisterHotKey(dashboard.Handle, 4, (uint)HotKeyManager.KeyModifiers.NoRepeat, (uint)Keys.F8);  // Self-test
         }
 
         private Icon LoadAppIcon()
@@ -155,6 +156,10 @@ namespace SpicyLamar
             {
                 engine.Toggle();
             });
+            menu.MenuItems.Add("Self-test (F8)", delegate(object s, EventArgs e)
+            {
+                engine.RunSelfTest();
+            });
             menu.MenuItems.Add("-");
             menu.MenuItems.Add("Exit (F12)", delegate(object s, EventArgs e)
             {
@@ -176,6 +181,7 @@ namespace SpicyLamar
                 HotKeyManager.UnregisterHotKey(dashboard.Handle, 1);
                 HotKeyManager.UnregisterHotKey(dashboard.Handle, 2);
                 HotKeyManager.UnregisterHotKey(dashboard.Handle, 3);
+                HotKeyManager.UnregisterHotKey(dashboard.Handle, 4);
                 dashboard.Dispose();
                 dashboard = null;
             }
@@ -218,7 +224,7 @@ namespace SpicyLamar
         public TerminalForm(AnswerEngine engine)
         {
             this.engine = engine;
-            this.Text = "Spicy Lamar v4.3";
+            this.Text = "Spicy Lamar v4.4";
             this.Size = new Size(780, 520);
             this.BackColor = Color.FromArgb(5, 5, 5);
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -271,6 +277,7 @@ namespace SpicyLamar
                 if (id == 1) ToggleVisibility();
                 if (id == 2) engine.Toggle();
                 if (id == 3) Application.Exit();
+                if (id == 4) engine.RunSelfTest();
             }
             else if (wmShellHook != 0 && m.Msg == wmShellHook)
             {
@@ -292,7 +299,7 @@ namespace SpicyLamar
         {
             Graphics g = e.Graphics;
 
-            g.DrawString("🌶️ SPICY LAMAR v4.3", headerFont, chiliBrush, 20, 20);
+            g.DrawString("🌶️ SPICY LAMAR v4.4", headerFont, chiliBrush, 20, 20);
             g.DrawLine(linePen, 20, 45, 740, 45);
 
             string status = engine.Active ? "[🌶️ ACTIVE]  —  F11 = PAUSE" : "[⚠ PAUSED]  —  F11 = START";
@@ -326,14 +333,8 @@ namespace SpicyLamar
 
             // Footer: hotkey cheat-sheet
             g.DrawLine(linePen, 20, 452, 740, 452);
-            string footer =
-                AnswerEngine.BOUNDED_MODE
-                    ? (AnswerEngine.TURBO_MODE
-                        ? "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 TURBO ANSWER (MAX 3/CALL)"
-                        : "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ANSWER (MAX 3/CALL)")
-                    : (AnswerEngine.TURBO_MODE
-                        ? "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 TURBO ATTENTION (1MS)"
-                        : "F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ALT+F1 ALWAYS-ON ATTENTION");
+            // v4.4: F8 self-test added; answer key is Alt+F1 ONLY (Alt+A never sent).
+            string footer = "F8 SELF-TEST   F9 DASHBOARD   F11 PAUSE/START   F12 EXIT   ANSWER KEY: ALT+F1 (ONLY)";
             g.DrawString(footer, monoFont, dimBrush, 20, 462);
         }
 
@@ -512,7 +513,7 @@ namespace SpicyLamar
             const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
             hookHandle = SetWinEventHook(0x0001, 0x8018, IntPtr.Zero, dele, 0, 0,
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-            Log("Spicy Lamar v4.3 online. Hotkeys: F9 dashboard, F11 pause/start, F12 exit.");
+            Log("Spicy Lamar v4.4 online. Hotkeys: F8 self-test, F9 dashboard, F11 pause/start, F12 exit. Answer key: Alt+F1 only.");
             Log("Engine initialized. Quantum call-event sensors active.");
 
             // Cache-refresh poll: 25 ms in max-performance profile (v4.3: was 1 ms —
@@ -706,107 +707,9 @@ namespace SpicyLamar
                 }
                 Interlocked.Exchange(ref lastFireTick, now);
 
-                Stopwatch sw = Stopwatch.StartNew();
-
-                IntPtr child = cachedChild;
-                IntPtr inter = cachedIntermediate;
-                if (child == IntPtr.Zero || !IsWindow(child))
-                {
-                    FindChildWindows(target);
-                    child = cachedChild;
-                    inter = cachedIntermediate;
-                }
-
-                // Attach thread input for unconditional foreground focus steal
-                uint curThreadId = GetCurrentThreadId();
-                uint targetThreadId = GetWindowThreadProcessId(target, IntPtr.Zero);
-                bool attached = false;
-                if (targetThreadId != 0 && targetThreadId != curThreadId)
-                {
-                    attached = AttachThreadInput(curThreadId, targetThreadId, true);
-                }
-
-                if (IsIconic(target)) ShowWindow(target, SW_RESTORE);
-                BringWindowToTop(target);
-                try { SetForegroundWindow(target); } catch { }
-                if (child != IntPtr.Zero && IsWindow(child)) try { SetFocus(child); } catch { }
-                else try { SetFocus(target); } catch { }
-
-                // ─────────────────────────────────────────────────────────────────
-                // 6-SHOT REDUNDANT QUANTUM IPC CASCADE
-                // ─────────────────────────────────────────────────────────────────
-
-                // Shot 1: Target window Alt+F1 Down/Up
-                PostMessage(target, WM_SYSKEYDOWN, (IntPtr)VK_MENU, (IntPtr)0x20380001);
-                PostMessage(target, WM_SYSKEYDOWN, (IntPtr)VK_F1,   (IntPtr)0x203B0001);
-                PostMessage(target, WM_SYSKEYUP,   (IntPtr)VK_F1,   (IntPtr)0xE03B0001);
-                PostMessage(target, WM_KEYUP,      (IntPtr)VK_MENU, (IntPtr)0xE0380001);
-
-                // Shot 2: Chrome Render Child + Intermediate D3D Alt+F1 Down/Up
-                if (child != IntPtr.Zero && IsWindow(child))
-                {
-                    PostMessage(child, WM_SYSKEYDOWN, (IntPtr)VK_MENU, (IntPtr)0x20380001);
-                    PostMessage(child, WM_SYSKEYDOWN, (IntPtr)VK_F1,   (IntPtr)0x203B0001);
-                    PostMessage(child, WM_SYSKEYUP,   (IntPtr)VK_F1,   (IntPtr)0xE03B0001);
-                    PostMessage(child, WM_KEYUP,      (IntPtr)VK_MENU, (IntPtr)0xE0380001);
-                }
-                if (inter != IntPtr.Zero && IsWindow(inter))
-                {
-                    PostMessage(inter, WM_SYSKEYDOWN, (IntPtr)VK_MENU, (IntPtr)0x20380001);
-                    PostMessage(inter, WM_SYSKEYDOWN, (IntPtr)VK_F1,   (IntPtr)0x203B0001);
-                    PostMessage(inter, WM_SYSKEYUP,   (IntPtr)VK_F1,   (IntPtr)0xE03B0001);
-                    PostMessage(inter, WM_KEYUP,      (IntPtr)VK_MENU, (IntPtr)0xE0380001);
-                }
-
-                // Shot 3: Post Enter & Space keys to root and child
-                PostMessage(target, WM_KEYDOWN, (IntPtr)VK_RETURN, (IntPtr)0x001C0001);
-                PostMessage(target, WM_KEYUP,   (IntPtr)VK_RETURN, (IntPtr)0xC01C0001);
-                PostMessage(target, WM_KEYDOWN, (IntPtr)VK_SPACE,  (IntPtr)0x00390001);
-                PostMessage(target, WM_KEYUP,   (IntPtr)VK_SPACE,  (IntPtr)0xC0390001);
-                if (child != IntPtr.Zero && IsWindow(child))
-                {
-                    PostMessage(child, WM_KEYDOWN, (IntPtr)VK_RETURN, (IntPtr)0x001C0001);
-                    PostMessage(child, WM_KEYUP,   (IntPtr)VK_RETURN, (IntPtr)0xC01C0001);
-                }
-
-                // Shot 4: Direct hardware-level SendInput synthesis with scan codes + legacy fallback
-                INPUT[] inputs = new INPUT[4];
-                inputs[0] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_MENU, wScan = SCAN_MENU } } };
-                inputs[1] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_F1,   wScan = SCAN_F1 } } };
-                inputs[2] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_F1,   wScan = SCAN_F1,   dwFlags = KEYEVENTF_KEYUP } } };
-                inputs[3] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_MENU, wScan = SCAN_MENU, dwFlags = KEYEVENTF_KEYUP } } };
-                SendInput(4, inputs, Marshal.SizeOf(typeof(INPUT)));
-
-                keybd_event(VK_MENU, SCAN_MENU, 0, UIntPtr.Zero);
-                keybd_event(VK_F1,   SCAN_F1,   0, UIntPtr.Zero);
-                keybd_event(VK_F1,   SCAN_F1,   KEYEVENTF_KEYUP, UIntPtr.Zero);
-                keybd_event(VK_MENU, SCAN_MENU, KEYEVENTF_KEYUP, UIntPtr.Zero);
-
-                // Shot 5: Direct RingCentral Command messages
-                PostMessage(target, WM_COMMAND, (IntPtr)1001, IntPtr.Zero);
-                PostMessage(target, WM_COMMAND, (IntPtr)1,    IntPtr.Zero);
-                PostMessage(target, WM_COMMAND, (IntPtr)101,  IntPtr.Zero);
-
-                // Shot 6: Focus re-assert, modifier key release safety net & detach
-                // (v4.3: REMOVED the old PostMessage(WM_SYSCHAR, VK_F1) shot that lived
-                //  here. WM_SYSCHAR carries a CHARACTER code in wParam, not a virtual-key
-                //  code — and VK_F1 is numerically 0x70, ASCII 'p'. RingCentral's
-                //  Chromium text pipeline treated it as real typed input, so every
-                //  cascade literally typed 'p' — the 'pppppppp' spam in the app.)
-                try { SetForegroundWindow(target); } catch { }
-
-                // Shot 6 (cont.): Modifier key release safety net & detach thread input
-                keybd_event(VK_MENU,    SCAN_MENU, KEYEVENTF_KEYUP, UIntPtr.Zero);
-                keybd_event(VK_CONTROL, 0x1D,      KEYEVENTF_KEYUP, UIntPtr.Zero);
-                keybd_event(VK_SHIFT,   0x2A,      KEYEVENTF_KEYUP, UIntPtr.Zero);
-
-                if (attached)
-                {
-                    try { AttachThreadInput(curThreadId, targetThreadId, false); } catch { }
-                }
-
-                sw.Stop();
-                long lat = sw.ElapsedTicks * 1000000 / Stopwatch.Frequency;
+                // v4.4: cascade delivery lives in DeliverAnswerCascade() so the
+                // F8 self-test can reuse it (answer key is Alt+F1 ONLY).
+                long lat = DeliverAnswerCascade(target);
                 Interlocked.Exchange(ref lastLatency, lat);
                 lock (statsLock)
                 {
@@ -853,6 +756,171 @@ namespace SpicyLamar
                 }
             }
             finally { Monitor.Exit(fireLock); }
+        }
+
+        // Delivers the focus steal + 6-shot answer cascade to the RingCentral
+        // window and returns the delivery latency in microseconds.
+        //
+        // v4.4 - ANSWER KEY IS Alt+F1 ONLY. Every shot below synthesizes
+        // Alt+F1 (plus Enter / Space / WM_COMMAND fallbacks that are NOT
+        // typing). RingCentral's STOCK answer shortcut Alt+A is deliberately
+        // NEVER sent: this build targets a RingCentral install whose answer
+        // shortcut is remapped to Alt+F1, and a stray Alt+A could open an app
+        // menu or trigger an unrelated action. Do NOT re-add an Alt+A fallback.
+        private long DeliverAnswerCascade(IntPtr target)
+        {
+            Stopwatch sw = Stopwatch.StartNew();
+
+            IntPtr child = cachedChild;
+            IntPtr inter = cachedIntermediate;
+            if (child == IntPtr.Zero || !IsWindow(child))
+            {
+                FindChildWindows(target);
+                child = cachedChild;
+                inter = cachedIntermediate;
+            }
+
+            // Attach thread input for unconditional foreground focus steal
+            uint curThreadId = GetCurrentThreadId();
+            uint targetThreadId = GetWindowThreadProcessId(target, IntPtr.Zero);
+            bool attached = false;
+            if (targetThreadId != 0 && targetThreadId != curThreadId)
+            {
+                attached = AttachThreadInput(curThreadId, targetThreadId, true);
+            }
+
+            if (IsIconic(target)) ShowWindow(target, SW_RESTORE);
+            BringWindowToTop(target);
+            try { SetForegroundWindow(target); } catch { }
+            if (child != IntPtr.Zero && IsWindow(child)) try { SetFocus(child); } catch { }
+            else try { SetFocus(target); } catch { }
+
+            // ─────────────────────────────────────────────────────────────────
+            // 6-SHOT REDUNDANT QUANTUM IPC CASCADE
+            // ─────────────────────────────────────────────────────────────────
+
+            // Shot 1: Target window Alt+F1 Down/Up
+            PostMessage(target, WM_SYSKEYDOWN, (IntPtr)VK_MENU, (IntPtr)0x20380001);
+            PostMessage(target, WM_SYSKEYDOWN, (IntPtr)VK_F1,   (IntPtr)0x203B0001);
+            PostMessage(target, WM_SYSKEYUP,   (IntPtr)VK_F1,   (IntPtr)0xE03B0001);
+            PostMessage(target, WM_KEYUP,      (IntPtr)VK_MENU, (IntPtr)0xE0380001);
+
+            // Shot 2: Chrome Render Child + Intermediate D3D Alt+F1 Down/Up
+            if (child != IntPtr.Zero && IsWindow(child))
+            {
+                PostMessage(child, WM_SYSKEYDOWN, (IntPtr)VK_MENU, (IntPtr)0x20380001);
+                PostMessage(child, WM_SYSKEYDOWN, (IntPtr)VK_F1,   (IntPtr)0x203B0001);
+                PostMessage(child, WM_SYSKEYUP,   (IntPtr)VK_F1,   (IntPtr)0xE03B0001);
+                PostMessage(child, WM_KEYUP,      (IntPtr)VK_MENU, (IntPtr)0xE0380001);
+            }
+            if (inter != IntPtr.Zero && IsWindow(inter))
+            {
+                PostMessage(inter, WM_SYSKEYDOWN, (IntPtr)VK_MENU, (IntPtr)0x20380001);
+                PostMessage(inter, WM_SYSKEYDOWN, (IntPtr)VK_F1,   (IntPtr)0x203B0001);
+                PostMessage(inter, WM_SYSKEYUP,   (IntPtr)VK_F1,   (IntPtr)0xE03B0001);
+                PostMessage(inter, WM_KEYUP,      (IntPtr)VK_MENU, (IntPtr)0xE0380001);
+            }
+
+            // Shot 3: Post Enter & Space keys to root and child
+            PostMessage(target, WM_KEYDOWN, (IntPtr)VK_RETURN, (IntPtr)0x001C0001);
+            PostMessage(target, WM_KEYUP,   (IntPtr)VK_RETURN, (IntPtr)0xC01C0001);
+            PostMessage(target, WM_KEYDOWN, (IntPtr)VK_SPACE,  (IntPtr)0x00390001);
+            PostMessage(target, WM_KEYUP,   (IntPtr)VK_SPACE,  (IntPtr)0xC0390001);
+            if (child != IntPtr.Zero && IsWindow(child))
+            {
+                PostMessage(child, WM_KEYDOWN, (IntPtr)VK_RETURN, (IntPtr)0x001C0001);
+                PostMessage(child, WM_KEYUP,   (IntPtr)VK_RETURN, (IntPtr)0xC01C0001);
+            }
+
+            // Shot 4: Direct hardware-level SendInput synthesis with scan codes + legacy fallback
+            INPUT[] inputs = new INPUT[4];
+            inputs[0] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_MENU, wScan = SCAN_MENU } } };
+            inputs[1] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_F1,   wScan = SCAN_F1 } } };
+            inputs[2] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_F1,   wScan = SCAN_F1,   dwFlags = KEYEVENTF_KEYUP } } };
+            inputs[3] = new INPUT { type = INPUT_KEYBOARD, U = new INPUTUNION { ki = new KEYBDINPUT { wVk = VK_MENU, wScan = SCAN_MENU, dwFlags = KEYEVENTF_KEYUP } } };
+            SendInput(4, inputs, Marshal.SizeOf(typeof(INPUT)));
+
+            keybd_event(VK_MENU, SCAN_MENU, 0, UIntPtr.Zero);
+            keybd_event(VK_F1,   SCAN_F1,   0, UIntPtr.Zero);
+            keybd_event(VK_F1,   SCAN_F1,   KEYEVENTF_KEYUP, UIntPtr.Zero);
+            keybd_event(VK_MENU, SCAN_MENU, KEYEVENTF_KEYUP, UIntPtr.Zero);
+
+            // Shot 5: Direct RingCentral Command messages
+            PostMessage(target, WM_COMMAND, (IntPtr)1001, IntPtr.Zero);
+            PostMessage(target, WM_COMMAND, (IntPtr)1,    IntPtr.Zero);
+            PostMessage(target, WM_COMMAND, (IntPtr)101,  IntPtr.Zero);
+
+            // Shot 6: Focus re-assert, modifier key release safety net & detach
+            // (v4.3: REMOVED the old PostMessage(WM_SYSCHAR, VK_F1) shot that lived
+            //  here. WM_SYSCHAR carries a CHARACTER code in wParam, not a virtual-key
+            //  code — and VK_F1 is numerically 0x70, ASCII 'p'. RingCentral's
+            //  Chromium text pipeline treated it as real typed input, so every
+            //  cascade literally typed 'p' — the 'pppppppp' spam in the app.)
+            try { SetForegroundWindow(target); } catch { }
+
+            // Shot 6 (cont.): Modifier key release safety net & detach thread input
+            keybd_event(VK_MENU,    SCAN_MENU, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            keybd_event(VK_CONTROL, 0x1D,      KEYEVENTF_KEYUP, UIntPtr.Zero);
+            keybd_event(VK_SHIFT,   0x2A,      KEYEVENTF_KEYUP, UIntPtr.Zero);
+
+            if (attached)
+            {
+                try { AttachThreadInput(curThreadId, targetThreadId, false); } catch { }
+            }
+
+            sw.Stop();
+            return sw.ElapsedTicks * 1000000 / Stopwatch.Frequency;
+        }
+
+        // F8 SELF-TEST (also available from the tray menu). Verifies the
+        // Alt+F1 answer path end-to-end WITHOUT touching call stats, and runs
+        // even while the engine is paused. It locates the RingCentral Phone
+        // window and delivers one real Alt+F1 cascade; the dashboard log
+        // reports the result. Never sends Alt+A.
+        public void RunSelfTest()
+        {
+            Log("──── F8 SELF-TEST ────────────────────────────────────");
+            Log(string.Format("Engine: {0}. Answer key: Alt+F1 ONLY (Alt+A is never sent).",
+                Active ? "ACTIVE" : "PAUSED (self-test runs anyway)"));
+
+            IntPtr target = FindRingCentralWindow();
+            if (target == IntPtr.Zero || !IsWindow(target))
+            {
+                Log("SELF-TEST: RingCentral Phone window NOT found.");
+                Log("SELF-TEST: Start RingCentral Phone, then press F8 again.");
+                Log("──── SELF-TEST COMPLETE (no window) ───────────────────");
+                return;
+            }
+
+            System.Text.StringBuilder sb = new System.Text.StringBuilder(256);
+            GetWindowText(target, sb, 256);
+            Log(string.Format("SELF-TEST: found RingCentral window \"{0}\" (hwnd 0x{1}).",
+                sb.ToString(), target.ToInt64().ToString("X")));
+            Log("SELF-TEST: delivering one Alt+F1 cascade (focus + 6-shot IPC + hardware SendInput)...");
+
+            if (!Monitor.TryEnter(fireLock, 0))
+            {
+                Log("SELF-TEST: a live answer cascade is in flight. Try again in a moment.");
+                Log("──── SELF-TEST ABORTED ────────────────────────────────");
+                return;
+            }
+            try
+            {
+                long lat = DeliverAnswerCascade(target);
+                Log(string.Format("SELF-TEST: Alt+F1 cascade delivered in {0} us.", lat));
+            }
+            catch (Exception ex)
+            {
+                Log("SELF-TEST: ERROR during cascade: " + ex.Message);
+            }
+            finally
+            {
+                Monitor.Exit(fireLock);
+            }
+
+            Log("SELF-TEST: PASS - Alt+F1 path verified (call stats unchanged).");
+            Log("          A ringing call is answered; an idle RingCentral ignores the shortcut.");
+            Log("──── SELF-TEST COMPLETE ────────────────────────────────");
         }
 
         private void Log(string msg)
