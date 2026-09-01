@@ -5,14 +5,21 @@ A portable Windows tray utility that automatically answers RingCentral Phone
 calls by watching for the RingCentral app window and sending the app's answer
 shortcut (Alt+F1) through a redundant keyboard cascade.
 
-**ALWAYS-ON ATTENTION (default):** while a RingCentral Phone window exists, the
-engine relentlessly focuses it and fires the cascade (one per 0.5 s) — it never
-goes quiet; F11 pauses/starts it. **Bounded mode (optional build):** fires only
-on call activity, max 3 attempts per ringing episode ≥ 1.5 s apart.
+**MAX-PERFORMANCE (default portable build, `SPICY_LAMAR_TURBO`):** while a
+RingCentral Phone window exists, the engine scans 1000x/second on a
+time-critical worker thread and fires the Alt+F1 cascade every 50 ms, with
+real-time process priority — for a PC dedicated to this job. Build without
+`SPICY_LAMAR_TURBO` for the classic gentle profile (20 ms scan / 0.5 s).
+**Bounded mode (optional build):** fires only on call activity, max 3 attempts
+per ringing episode — ≥ 100 ms apart / 2 s re-arm in turbo, or ≥ 1.5 s apart /
+10 s re-arm in the classic profile.
 
 ## Quick Start
 Grab `dist\SpicyLamar.exe` (or `dist\SpicyLamar-Portable.zip`), copy it
 anywhere, and double-click. No admin rights, no UAC, no installation.
+
+> The checked-in `dist` binary is the previous build. Rebuild on a Windows PC
+> to get the turbo profile below.
 
 ## Build Instructions
 1. Open **Native Tools Command Prompt for VS 2022** (or double-click

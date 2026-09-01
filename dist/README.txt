@@ -17,13 +17,18 @@ CONTROLS
   F12           Exit
   Right-click tray icon for the app menu.
 
-ANSWER BEHAVIOR (ALWAYS-ON ATTENTION, default)
-  * Hunts for the RingCentral Phone window 50x per second.
+ANSWER BEHAVIOR (MAX-PERFORMANCE TURBO, default)
+  * Hunts for the RingCentral Phone window 1000x per second on a
+    dedicated time-critical poll thread.
+  * Process runs at real-time priority (falls back to high if denied).
   * While it exists: focuses it (restores if minimized) + fires the
-    Alt+F1 cascade, one every 0.5 s — never goes quiet.
+    Alt+F1 cascade every 50 ms — max speed for a dedicated PC.
   * F11 pauses/starts the engine at any time.
+  * Classic profile (build without SPICY_LAMAR_TURBO): 50x/sec scan,
+    one cascade every 0.5 s.
   * Optional bounded build (-DSPICY_LAMAR_BOUNDED): fires only on call
-    activity, max 3 attempts per ringing episode, 1.5 s apart.
+    activity, max 3 attempts per ringing episode — turbo: 100 ms apart /
+    2 s re-arm; classic: 1.5 s apart / 10 s re-arm.
 
 NOTES
   * Windows 10 / 11 x64. Single file, zero external dependencies.
