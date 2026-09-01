@@ -6,15 +6,19 @@ calls by watching for the RingCentral app window and sending the app's answer
 shortcut (Alt+F1) through a redundant keyboard cascade.
 
 **MAX-PERFORMANCE (default portable build, `SPICY_LAMAR_TURBO`):** while a
-RingCentral Phone window exists, the engine scans 1000x/second on a
-time-critical worker thread with MMCSS Pro Audio scheduling and 0.5 ms kernel
-timer resolution, firing the Alt+F1 cascade with a **1 ms floor**
-(under 20 microseconds cascade execution latency — thousands of times faster
-than a blink), with real-time process priority — for a PC dedicated to this
-job. Real call events bypass the polling debounce and fire the cascade
-instantly; per-cascade logging is coalesced at high rates (stats stay fully
-recorded). ⚠️ This is the most aggressive possible setting. Build without
-`SPICY_LAMAR_TURBO` for the classic gentle profile (20 ms scan / 0.5 s).
+RingCentral Phone window exists, the engine scans 200x/second on a
+high-priority worker thread with MMCSS Pro Audio scheduling and 0.5 ms kernel
+timer resolution, firing the Alt+F1 cascade with a **100 ms poll floor**
+(microsecond cascade execution latency — thousands of times faster
+than a blink), with high (not real-time, v4.3) process priority — for a PC
+dedicated to this job. Real call events skip the polling debounce and fire the
+cascade instantly (event storms are coalesced at a 50 ms absolute floor);
+per-cascade logging is coalesced at high rates (stats stay fully
+recorded). ✅ v4.3 removed the `WM_SYSCHAR(VK_F1)` cascade step whose wParam
+(0x70 = ASCII `'p'`) made RingCentral type `pppppppp`, and fixed the
+RingCentral lag caused by real-time priority + unlimited cascade rates.
+Build without `SPICY_LAMAR_TURBO` for the classic gentle profile
+(20 ms scan / 0.5 s).
 **Bounded mode (optional build):** fires only on call activity, max 3 attempts
 per ringing episode — ≥ 100 ms apart / 2 s re-arm in turbo, or ≥ 1.5 s apart /
 10 s re-arm in the classic profile.

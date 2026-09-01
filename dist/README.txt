@@ -1,4 +1,4 @@
-SPICY LAMAR v4.2 - Portable Edition
+SPICY LAMAR v4.3 - Portable Edition
 =============================================================
 
 This bundle contains ONE file that matters:
@@ -18,19 +18,21 @@ CONTROLS
   Right-click tray icon for the app menu.
 
 ANSWER BEHAVIOR (MAX-PERFORMANCE TURBO, default)
-  * Hunts for the RingCentral Phone window 1000x per second on a
-    dedicated time-critical poll thread.
-  * Process runs at real-time priority (falls back to high if denied).
+  * Hunts for the RingCentral Phone window 200x per second (5 ms) on a
+    dedicated high-priority poll thread.
+  * Process runs at high priority (v4.3: high, not real-time, so
+    RingCentral no longer lags).
   * While it exists: focuses it (restores if minimized) + fires the
-    Alt+F1 cascade with a 1 ms floor — up to 1000 cascades/second,
-    max speed for a dedicated PC.
-  * Real call events (window shown/activated/title change) bypass the
-    polling debounce and fire the cascade instantly.
+    Alt+F1 cascade with a 100 ms poll floor.
+  * Real call events (window shown/activated/title change) skip the
+    polling debounce and fire the cascade instantly; back-to-back
+    event storms are coalesced at a 50 ms absolute floor.
+  * v4.3 fix: removed the WM_SYSCHAR(VK_F1) cascade step whose wParam
+    (0x70 = ASCII 'p') made RingCentral literally type 'pppppppp'.
   * Per-cascade logging is coalesced at high rates; stats stay fully
     recorded.
-  * WARNING: this is the most aggressive possible setting. If
-    RingCentral or the PC misbehaves, rebuild with
-    ANSWER_DEBOUNCE_MS = 50 in src\main.cpp for a gentler profile.
+  * If RingCentral or the PC still misbehaves, rebuild with a higher
+    ANSWER_DEBOUNCE_MS (e.g. 500) in src\main.cpp for a gentler profile.
   * F11 pauses/starts the engine at any time.
   * Classic profile (build without SPICY_LAMAR_TURBO): 50x/sec scan,
     one cascade every 0.5 s.
