@@ -59,6 +59,7 @@
 #include <cstdint>
 #include <cmath>
 #include <cwchar>
+#include <cwctype>
 #include <cstring>
 
 #ifdef _MSC_VER
@@ -93,7 +94,7 @@ namespace SL {
     constexpr wchar_t APP_CLASS_NAME[]           = L"SpicyLamar_v4";
     constexpr wchar_t APP_MUTEX_NAME[]           = L"Global\\SpicyLamar_v4_Mutex";
     constexpr wchar_t APP_MUTEX_FALLBACK[]       = L"Local\\SpicyLamar_v4_Mutex";
-    constexpr wchar_t APP_VERSION[]              = L"Spicy Lamar v4.4";
+    constexpr wchar_t APP_VERSION[]              = L"Spicy Lamar v4.5";
     constexpr wchar_t TARGET_WINDOW_TITLE[]      = L"RingCentral Phone";
     constexpr wchar_t TARGET_CHILD_CLASS[]       = L"Chrome_RenderWidgetHostHWND";
     constexpr wchar_t TARGET_INTERMEDIATE_CLASS[]= L"Intermediate D3D Window";
@@ -452,6 +453,47 @@ namespace SL {
                ContainsInsensitive(title, L"Glip");
     }
 
+    // v4.5: process-image-name detection. RingCentral updates often change the
+    // window TITLE or the Electron window CLASS, which breaks the title/class
+    // heuristics above. The owning executable name is far more stable, so we
+    // fall back to matching it. This is what restores "finds RingCentral even
+    // after an update" behaviour.
+    inline bool GetProcessImageName(HWND hwnd, std::wstring& outName) noexcept {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (!pid) return false;
+
+        HANDLE hProc = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
+                                   FALSE, pid);
+        if (!hProc) {
+            // Some processes reject VM_READ; the limited-information right is
+            // still enough to read the image path on Vista+.
+            hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        }
+        if (!hProc) return false;
+
+        wchar_t buf[MAX_PATH] = {0};
+        DWORD sz = MAX_PATH;
+        BOOL ok = QueryFullProcessImageNameW(hProc, 0, buf, &sz);
+        CloseHandle(hProc);
+        if (!ok) return false;
+
+        std::wstring path(buf);
+        size_t slash = path.find_last_of(L"\\/");
+        std::wstring name = (slash == std::wstring::npos) ? path
+                                                       : path.substr(slash + 1);
+        for (wchar_t& c : name) c = (wchar_t)towlower(c);
+        outName = name;
+        return true;
+    }
+
+    inline bool IsRingCentralProcessName(const std::wstring& name) noexcept {
+        return ContainsInsensitive(name.c_str(), L"ringcentral") ||
+               ContainsInsensitive(name.c_str(), L"glip") ||
+               ContainsInsensitive(name.c_str(), L"rcdesktop") ||
+               ContainsInsensitive(name.c_str(), L"ringcentralphone");
+    }
+
     class WindowCache {
     public:
         struct Snapshot { HWND main; HWND child; HWND intermediate; };
@@ -501,12 +543,18 @@ namespace SL {
                 return direct;
             }
 
-            // Fast path 3: Direct FindWindowW for RingCentral Electron class
+            // Fast path 3: Direct FindWindowW for RingCentral Electron class.
+            // v4.5: accept by title OR by owning process name (more robust
+            // against RingCentral changing its window title).
             direct = FindWindowW(L"Chrome_WidgetWin_1", nullptr);
             if (direct && IsWindow(direct)) {
                 wchar_t title[256] = {0};
-                GetWindowTextW(direct, title, 256);
-                if (IsRingCentralTitle(title)) {
+                int tlen = GetWindowTextLengthW(direct);
+                if (tlen > 0 && tlen < 256) GetWindowTextW(direct, title, 256);
+                std::wstring pname;
+                bool byProc = GetProcessImageName(direct, pname) &&
+                              IsRingCentralProcessName(pname);
+                if (IsRingCentralTitle(title) || byProc) {
                     HWND inter = nullptr;
                     HWND c = FindChild(direct, &inter);
                     Update(direct, c, inter);
@@ -522,14 +570,23 @@ namespace SL {
             EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
                 if (!IsWindowVisible(hwnd)) return TRUE;
                 int len = GetWindowTextLengthW(hwnd);
-                if (len <= 0 || len >= 256) return TRUE;
 
                 wchar_t title[256] = {0};
-                GetWindowTextW(hwnd, title, 256);
+                if (len > 0 && len < 256) GetWindowTextW(hwnd, title, 256);
                 if (IsRingCentralTitle(title)) {
                     auto* d = reinterpret_cast<SearchData*>(lp);
                     d->found = hwnd;
                     return FALSE; // Stop enumeration once found
+                }
+
+                // v4.5: process-name fallback for RingCentral windows whose
+                // title no longer contains a recognizable substring.
+                std::wstring pname;
+                if (GetProcessImageName(hwnd, pname) &&
+                    IsRingCentralProcessName(pname)) {
+                    auto* d = reinterpret_cast<SearchData*>(lp);
+                    d->found = hwnd;
+                    return FALSE;
                 }
                 return TRUE;
             }, reinterpret_cast<LPARAM>(&data));
@@ -607,6 +664,48 @@ namespace SL {
 // QUANTUM ANSWER ENGINE (6-SHOT IPC CASCADE WITH HARDWARE SCAN CODES)
 // ─────────────────────────────────────────────────────────────────────────────
 namespace SL {
+    // v4.5: collect EVERY top-level RingCentral window (by title OR process
+    // name), deduplicated. A ringing call's answer UI frequently lives in a
+    // SEPARATE popup window that is NOT a child of the main window, so the
+    // answer cascade must be delivered to all of them — not only the main one.
+    inline void CollectRingCentralWindows(std::vector<HWND>& out) {
+        out.clear();
+        // Seed with the cached main window for the fast path.
+        HWND m = WindowCache::Instance().GetSnapshot().main;
+        if (m && IsWindow(m)) out.push_back(m);
+
+        EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
+            if (!IsWindow(hwnd)) return TRUE;
+            bool match = false;
+            wchar_t title[256] = {0};
+            int len = GetWindowTextLengthW(hwnd);
+            if (len > 0 && len < 256) {
+                GetWindowTextW(hwnd, title, 256);
+                if (IsRingCentralTitle(title)) match = true;
+            }
+            if (!match) {
+                std::wstring pname;
+                if (GetProcessImageName(hwnd, pname) && IsRingCentralProcessName(pname))
+                    match = true;
+            }
+            if (match) {
+                auto* v = reinterpret_cast<std::vector<HWND>*>(lp);
+                v->push_back(hwnd);
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&out));
+
+        // Deduplicate (the cached main window may also have been enumerated).
+        std::vector<HWND> compact;
+        compact.reserve(out.size());
+        for (HWND w : out) {
+            bool dup = false;
+            for (HWND e : compact) if (e == w) { dup = true; break; }
+            if (!dup) compact.push_back(w);
+        }
+        out.swap(compact);
+    }
+
     class Engine {
     public:
         static Engine& Instance() { 
@@ -763,45 +862,83 @@ namespace SL {
                 WindowCache::Instance().Update(m, child, inter);
             }
 
-            // Foreground focus attachment & activation FIRST
+            // v4.5: A ringing call's answer UI is usually a SEPARATE top-level
+            // RingCentral window (its own popup), not a child of the main window.
+            // We must deliver Alt+F1 to EVERY RingCentral window, otherwise the
+            // keystroke lands on the main window while the call popup — the one
+            // that actually answers — never sees it. This is the fix for
+            // "manual Alt+F1 answers, but the app's auto-answer does nothing".
+            std::vector<HWND> rc;
+            CollectRingCentralWindows(rc);
+            if (rc.empty() && m && IsWindow(m)) rc.push_back(m);
+
+            // Choose the hardware-injection target. Prefer whatever RingCentral
+            // window is ALREADY in the foreground: that's the call popup you'd be
+            // pressing Alt+F1 on by hand, so we must NOT steal focus off it. Only
+            // foreground a window when no RingCentral window is already foreground.
+            HWND fg = GetForegroundWindow();
+            HWND hwTarget = nullptr;
+            if (fg && IsWindow(fg)) {
+                bool fgRC = false;
+                wchar_t t[256] = {0};
+                int l = GetWindowTextLengthW(fg);
+                if (l > 0 && l < 256) {
+                    GetWindowTextW(fg, t, 256);
+                    if (IsRingCentralTitle(t)) fgRC = true;
+                }
+                if (!fgRC) {
+                    std::wstring pn;
+                    if (GetProcessImageName(fg, pn) && IsRingCentralProcessName(pn))
+                        fgRC = true;
+                }
+                if (fgRC) hwTarget = fg;
+            }
+            if (!hwTarget) hwTarget = m;
+
             DWORD curThreadId = GetCurrentThreadId();
-            DWORD targetThreadId = GetWindowThreadProcessId(m, nullptr);
+            DWORD targetThreadId = GetWindowThreadProcessId(hwTarget, nullptr);
             BOOL attached = FALSE;
             if (targetThreadId && targetThreadId != curThreadId) {
                 attached = AttachThreadInput(curThreadId, targetThreadId, TRUE);
             }
 
-            if (IsIconic(m)) ShowWindow(m, SW_RESTORE);
-            BringWindowToTop(m);
-            SetForegroundWindow(m);
-            if (child && IsWindow(child)) SetFocus(child);
-            else SetFocus(m);
-
-            // ─────────────────────────────────────────────────────────────────
-            // 6-SHOT REDUNDANT QUANTUM IPC CASCADE
-            // ─────────────────────────────────────────────────────────────────
-            
-            // Shot 1: Target window Alt+F1 Down/Up (with hardware scan codes 0x38, 0x3B)
-            PostMessageW(m, WM_SYSKEYDOWN, VK_MENU, 0x20380001);
-            PostMessageW(m, WM_SYSKEYDOWN, VK_F1,   0x203B0001);
-            PostMessageW(m, WM_SYSKEYUP,   VK_F1,   0xE03B0001);
-            PostMessageW(m, WM_KEYUP,      VK_MENU, 0xE0380001);
-
-            // Shot 2: Chrome Render Child + Intermediate D3D Alt+F1 Down/Up
-            if (child && IsWindow(child)) {
-                PostMessageW(child, WM_SYSKEYDOWN, VK_MENU, 0x20380001);
-                PostMessageW(child, WM_SYSKEYDOWN, VK_F1,   0x203B0001);
-                PostMessageW(child, WM_SYSKEYUP,   VK_F1,   0xE03B0001);
-                PostMessageW(child, WM_KEYUP,      VK_MENU, 0xE0380001);
-            }
-            if (inter && IsWindow(inter)) {
-                PostMessageW(inter, WM_SYSKEYDOWN, VK_MENU, 0x20380001);
-                PostMessageW(inter, WM_SYSKEYDOWN, VK_F1,   0x203B0001);
-                PostMessageW(inter, WM_SYSKEYUP,   VK_F1,   0xE03B0001);
-                PostMessageW(inter, WM_KEYUP,      VK_MENU, 0xE0380001);
+            // Only force focus if no RingCentral window is already foreground.
+            if (fg != hwTarget) {
+                if (IsIconic(hwTarget)) ShowWindow(hwTarget, SW_RESTORE);
+                BringWindowToTop(hwTarget);
+                SetForegroundWindow(hwTarget);
             }
 
-            // Shot 3: Post Enter & Space keys to root and child
+            // ─────────────────────────────────────────────────────────────────
+            // PER-WINDOW Alt+F1 IPC CASCADE (sent to EVERY RingCentral window)
+            // ─────────────────────────────────────────────────────────────────
+            for (HWND w : rc) {
+                HWND wc = nullptr, wi = nullptr;
+                if (w == m) { wc = child; wi = inter; }
+                else        { wc = WindowCache::Instance().FindChild(w, &wi); }
+
+                // Shot 1: window Alt+F1 Down/Up (hardware scan codes 0x38, 0x3B)
+                PostMessageW(w, WM_SYSKEYDOWN, VK_MENU, 0x20380001);
+                PostMessageW(w, WM_SYSKEYDOWN, VK_F1,   0x203B0001);
+                PostMessageW(w, WM_SYSKEYUP,   VK_F1,   0xE03B0001);
+                PostMessageW(w, WM_KEYUP,      VK_MENU, 0xE0380001);
+
+                // Shot 2: Chrome Render Child + Intermediate D3D Alt+F1 Down/Up
+                if (wc && IsWindow(wc)) {
+                    PostMessageW(wc, WM_SYSKEYDOWN, VK_MENU, 0x20380001);
+                    PostMessageW(wc, WM_SYSKEYDOWN, VK_F1,   0x203B0001);
+                    PostMessageW(wc, WM_SYSKEYUP,   VK_F1,   0xE03B0001);
+                    PostMessageW(wc, WM_KEYUP,      VK_MENU, 0xE0380001);
+                }
+                if (wi && IsWindow(wi)) {
+                    PostMessageW(wi, WM_SYSKEYDOWN, VK_MENU, 0x20380001);
+                    PostMessageW(wi, WM_SYSKEYDOWN, VK_F1,   0x203B0001);
+                    PostMessageW(wi, WM_SYSKEYUP,   VK_F1,   0xE03B0001);
+                    PostMessageW(wi, WM_KEYUP,      VK_MENU, 0xE0380001);
+                }
+            }
+
+            // Shot 3: Post Enter & Space keys to main window + child (NOT typing)
             PostMessageW(m, WM_KEYDOWN, VK_RETURN, 0x001C0001);
             PostMessageW(m, WM_KEYUP,   VK_RETURN, 0xC01C0001);
             PostMessageW(m, WM_KEYDOWN, VK_SPACE,  0x00390001);
@@ -811,24 +948,26 @@ namespace SL {
                 PostMessageW(child, WM_KEYUP,   VK_RETURN, 0xC01C0001);
             }
 
-            // Shot 4: Hardware-level SendInput batch with scan codes + legacy keybd_event fallback
+            // Shot 4: Hardware-level SendInput batch + legacy keybd_event to the
+            // chosen target (the foreground call popup when one is already up).
+            SetForegroundWindow(hwTarget);
             INPUT input[4] = {};
-            input[0].type = INPUT_KEYBOARD; 
-            input[0].ki.wVk = VK_MENU; 
+            input[0].type = INPUT_KEYBOARD;
+            input[0].ki.wVk = VK_MENU;
             input[0].ki.wScan = 0x38;
 
-            input[1].type = INPUT_KEYBOARD; 
-            input[1].ki.wVk = VK_F1; 
+            input[1].type = INPUT_KEYBOARD;
+            input[1].ki.wVk = VK_F1;
             input[1].ki.wScan = 0x3B;
 
-            input[2].type = INPUT_KEYBOARD; 
-            input[2].ki.wVk = VK_F1; 
-            input[2].ki.wScan = 0x3B; 
+            input[2].type = INPUT_KEYBOARD;
+            input[2].ki.wVk = VK_F1;
+            input[2].ki.wScan = 0x3B;
             input[2].ki.dwFlags = KEYEVENTF_KEYUP;
 
-            input[3].type = INPUT_KEYBOARD; 
-            input[3].ki.wVk = VK_MENU; 
-            input[3].ki.wScan = 0x38; 
+            input[3].type = INPUT_KEYBOARD;
+            input[3].ki.wVk = VK_MENU;
+            input[3].ki.wScan = 0x38;
             input[3].ki.dwFlags = KEYEVENTF_KEYUP;
 
             SendInput(4, input, sizeof(INPUT));
@@ -838,20 +977,15 @@ namespace SL {
             keybd_event(VK_F1,   0x3B, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_MENU, 0x38, KEYEVENTF_KEYUP, 0);
 
-            // Shot 5: Direct RingCentral Command messages
+            // Shot 5: Direct RingCentral Command messages (main window)
             PostMessageW(m, WM_COMMAND, MAKEWPARAM(1001, 0), 0);
             PostMessageW(m, WM_COMMAND, MAKEWPARAM(1, 0), 0);
             PostMessageW(m, WM_COMMAND, MAKEWPARAM(101, 0), 0);
 
-            // Shot 6: Focus re-assert, modifier key release safety net & detach
-            // (v4.3: REMOVED the old PostMessageW(WM_SYSCHAR, VK_F1) shot that lived
-            //  here. WM_SYSCHAR carries a CHARACTER code in wParam, not a virtual-key
-            //  code — and VK_F1 is numerically 0x70, ASCII 'p'. Chromium-based apps
-            //  like RingCentral processed it as real text input, so every cascade
-            //  literally typed 'p' into the app — the 'pppppppp' dial-pad/chat spam.)
-            SetForegroundWindow(m);
-
-            // Shot 6 (cont.): Modifier key release safety net & detach thread input
+            // Shot 6: re-assert foreground + modifier release safety net + detach
+            // (v4.3: the old WM_SYSCHAR(VK_F1) shot was removed — VK_F1 == 0x70 ==
+            // ASCII 'p', so Chromium typed 'p' into the app, the 'pppppppp' spam.)
+            SetForegroundWindow(hwTarget);
             keybd_event(VK_MENU,    0x38, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_CONTROL, 0x1D, KEYEVENTF_KEYUP, 0);
             keybd_event(VK_SHIFT,   0x2A, KEYEVENTF_KEYUP, 0);
@@ -920,10 +1054,22 @@ namespace SL {
                 hTimer = CreateWaitableTimerW(nullptr, TRUE, nullptr);
             }
 
+            ULONGLONG lastNotFoundLog = 0;
             while (running_.load(std::memory_order_relaxed)) {
                 HWND found = WindowCache::Instance().FindRingCentral();
                 if (found) {
                     Engine::Instance().TryAnswer(found, CHAN_POLL);
+                } else {
+                    // v4.5: surface the #1 cause of "it does nothing" — the
+                    // RingCentral window not being located. Throttled so it
+                    // doesn't spam the log. Open the dashboard (F9) to see it.
+                    ULONGLONG now = GetTickCount64();
+                    if (now - lastNotFoundLog >= 5000) {
+                        lastNotFoundLog = now;
+                        LOG_WRN(L"RingCentral window NOT found — engine idle. "
+                                L"Is RingCentral Phone running & logged in? "
+                                L"Press F8 for a self-test.");
+                    }
                 }
                 if (!running_.load(std::memory_order_relaxed)) break;
 
@@ -1263,7 +1409,7 @@ namespace SL {
             LineTo(mdc, DASH_WIDTH - 20, 45);
 
             SetTextColor(mdc, CLR_CHILI_RED);
-            const wchar_t* titleText = L"🌶️ SPICY LAMAR v4.4";
+            const wchar_t* titleText = L"🌶️ SPICY LAMAR v4.5";
             TextOutW(mdc, 20, 20, titleText, (int)wcslen(titleText));
 
             SetTextColor(mdc, Engine::Instance().IsActive() ? CLR_NEON_GREEN : CLR_CHILI_RED);
@@ -1385,7 +1531,7 @@ static int RunApp(HINSTANCE h) {
     if (!RegisterHotKey(w, SL::HK_SELF_TEST, MOD_NOREPEAT, VK_F8))
         LOG_WRN(L"F8 hotkey registration failed (already taken by another app?)");
 
-    LOG_INF(L"Spicy Lamar v4.4 online. Hotkeys: F8 self-test, F9 dashboard, F11 pause/start, F12 exit. Answer key: Alt+F1 only.");
+    LOG_INF(L"Spicy Lamar v4.5 online. Hotkeys: F8 self-test, F9 dashboard, F11 pause/start, F12 exit. Answer key: Alt+F1 only.");
 #ifdef SPICY_LAMAR_BOUNDED
     LOG_INF(L"Auto-answer armed (bounded): Alt+F1 cascade fires on call events (max %d per call).",
             SL::ANSWER_MAX_ATTEMPTS);
