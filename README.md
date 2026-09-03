@@ -44,6 +44,15 @@ window each tick. Press **F11** to pause/start the engine.
 > an end-to-end self-test that finds the RingCentral window and fires one
 > Alt+F1 cascade, reporting the result in the dashboard log — it works while
 > paused and does not affect call stats.
+>
+> ✅ **v4.5 — fixed auto-answer delivery.** Auto-answer now delivers the Alt+F1
+> cascade to **every** RingCentral window (a ringing call's answer UI is usually a
+> separate popup window, not a child of the main window) and **no longer steals
+> focus** off the foreground call popup — that was why a manual Alt+F1 answered but
+> the auto-answer didn't. Detection also matches by RingCentral's **process name**,
+> so it survives RingCentral title/class changes. When the engine is ACTIVE but a
+> call isn't answered, open the dashboard (**F9**): it now logs
+> `RingCentral window NOT found` if detection is the problem.
 
 Build without `-DSPICY_LAMAR_TURBO` to get the old gentle profile: 20 ms scan /
 one cascade every 0.5 s.
